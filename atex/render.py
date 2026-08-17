@@ -47,12 +47,16 @@ def _render_hotel(state: RunState) -> str | None:
     """
     profile = state.profile or {}
     hotel = state.candidates.get(state.selected_hotel_id or "")
+    if hotel is not None and hotel.verdict == "flagged":
+        # Flagged hotels are explained under Considered but not scheduled;
+        # presenting one as the selected stay would contradict that decision.
+        hotel = None
 
     if hotel is None:
         if profile.get("needs_hotel"):
             return (
                 "## Where you'll stay\n"
-                "- No hotel could be selected from the live place search for this destination. "
+                "- No hotel without known accessibility concerns could be selected. "
                 "Ask me again with your dates and budget, or tell me an area you prefer."
             )
         return None
@@ -166,8 +170,9 @@ def render_itinerary(state: RunState, trace: RunTrace, settings: Settings) -> st
         if isinstance(item, dict)
         and str(item.get("place_id") or "") in state.candidates
     }
-    if state.selected_hotel_id in state.candidates:
-        scheduled_ids.add(str(state.selected_hotel_id))
+    selected_hotel = state.candidates.get(str(state.selected_hotel_id or ""))
+    if selected_hotel is not None and selected_hotel.verdict != "flagged":
+        scheduled_ids.add(selected_hotel.place_id)
     scheduled = [state.candidates[place_id] for place_id in scheduled_ids]
     counts = {
         verdict: sum(1 for candidate in scheduled if candidate.verdict == verdict)

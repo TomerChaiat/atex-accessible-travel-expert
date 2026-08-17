@@ -15,6 +15,7 @@ from typing import Any, Callable
 from .repository import Place, Repository, RepositoryError, travel_estimate
 
 MAX_LIMIT = 8
+MAX_PROVIDER_RESULTS = 20
 
 TRAVEL_MODES = ("wheelchair_walk", "accessible_transit", "accessible_taxi")
 
@@ -31,23 +32,36 @@ def _clean_limit(args: dict[str, Any], default: int, cap: int) -> int:
     return max(1, min(value, cap))
 
 
-def _search(repo: Repository, kind: str, args: dict[str, Any], needs: list[str], cap: int):
+def _search(
+    repo: Repository,
+    kind: str,
+    args: dict[str, Any],
+    needs: list[str],
+    cap: int,
+    excluded_ids: set[str],
+):
     city = (args.get("city") or "").strip()
     if not city:
         raise ToolError("city is required")
     categories = args.get("categories") or []
     if not isinstance(categories, list):
         categories = [str(categories)]
+    requested = _clean_limit(args, 6, cap)
+    # During the one replacement round, ask the provider for enough deeper
+    # results to get past candidates already checked. Google Text Search caps
+    # one page at 20, which is still comfortably bounded.
+    fetch_limit = min(MAX_PROVIDER_RESULTS, requested + len(excluded_ids))
     try:
         places = repo.search_places(
             city=city,
             kind=kind,
             categories=[str(c) for c in categories],
             needs=needs,
-            limit=_clean_limit(args, 6, cap),
+            limit=fetch_limit,
         )
     except RepositoryError as exc:
         raise ToolError(str(exc)) from exc
+    places = [place for place in places if place.id not in excluded_ids][:requested]
     if not places:
         if getattr(repo, "name", "") == "google_places":
             note = (
@@ -67,20 +81,24 @@ def _search(repo: Repository, kind: str, args: dict[str, Any], needs: list[str],
 
 
 def build_toolset(
-    repo: Repository, needs: list[str], max_candidates: int
+    repo: Repository,
+    needs: list[str],
+    max_candidates: int,
+    exclude_place_ids: set[str] | None = None,
 ) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
     """Bind the place provider and traveller's needs into ready-to-call tools."""
 
     cap = max(1, min(max_candidates, MAX_LIMIT))
+    excluded = set(exclude_place_ids or set())
 
     def search_activities(args: dict[str, Any]) -> dict[str, Any]:
-        return _search(repo, "activity", args, needs, cap)
+        return _search(repo, "activity", args, needs, cap, excluded)
 
     def search_hotels(args: dict[str, Any]) -> dict[str, Any]:
-        return _search(repo, "hotel", args, needs, min(cap, 4))
+        return _search(repo, "hotel", args, needs, min(cap, 4), excluded)
 
     def search_restaurants(args: dict[str, Any]) -> dict[str, Any]:
-        return _search(repo, "restaurant", args, needs, min(cap, 4))
+        return _search(repo, "restaurant", args, needs, min(cap, 4), excluded)
 
     def get_place_details(args: dict[str, Any]) -> dict[str, Any]:
         place_id = (args.get("place_id") or "").strip()

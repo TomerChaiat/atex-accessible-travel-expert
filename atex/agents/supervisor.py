@@ -116,9 +116,30 @@ def _legalize(state: RunState, choice: str) -> tuple[str, str | None]:
 
 
 def decide(ctx: AgentContext, state: RunState) -> Decision:
-    # Once every selected candidate has a verdict, the only legal productive
-    # next step is planning. Skip a redundant model call that can only be
-    # corrected back to SchedulePlanner.
+    # A concern is not an acceptable first-choice itinerary stop. Give live
+    # discovery one bounded replacement round before planning, and tell the
+    # finder exactly which candidates must not be selected again.
+    flagged = state.by_verdict("flagged")
+    if (
+        state.itinerary is None
+        and state.profile is not None
+        and flagged
+        and not state.unvalidated()
+        and state.finder_rounds < MAX_FINDER_ROUNDS
+    ):
+        names = ", ".join(candidate.name for candidate in flagged[:6])
+        state.log("Supervisor: -> ActivityLogisticsFinder (replace concerns)")
+        return Decision(
+            next_module=ACTIVITY_LOGISTICS_FINDER,
+            instruction=(
+                "Find different replacements for the candidates with accessibility "
+                f"concerns: {names}. Do not select any previously checked place."
+            ),
+            reasoning="Accessibility concerns require one replacement search.",
+        )
+
+    # Once every selected candidate has a verdict (and the replacement round
+    # is complete or unnecessary), the only productive next step is planning.
     if (
         state.itinerary is None
         and state.profile is not None

@@ -18,9 +18,10 @@ from atex.agents.accessibility_validator import (  # noqa: E402
     _candidate_excerpt,
     _mentions_candidate,
     _sanitize,
+    retrieve_evidence,
 )
 from atex.agents.activity_finder import _wants_restaurants  # noqa: E402
-from atex.agents.supervisor import _legalize  # noqa: E402
+from atex.agents.supervisor import _legalize, decide  # noqa: E402
 from atex.agents.schedule_planner import _enforce_verdicts  # noqa: E402
 from atex.agents.user_profile import normalize_profile  # noqa: E402
 from atex.config import load_settings  # noqa: E402
@@ -284,7 +285,7 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
         )
         return state
 
-    def test_claimed_accessibility_is_overwritten_from_the_verdict(self):
+    def test_flagged_candidate_is_removed_even_if_planner_scheduled_it(self):
         state = self._state()
         itinerary = _enforce_verdicts(state, {
             "days": [{"day": 1, "items": [
@@ -293,7 +294,11 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
             ]}],
         })
         labels = [i["accessibility"] for i in itinerary["days"][0]["items"]]
-        self.assertEqual(labels, ["unknown", "flagged"])
+        self.assertEqual(labels, ["unknown"])
+        rejected = {entry["place_id"]: entry for entry in itinerary["not_scheduled"]}
+        self.assertIn("p2", rejected)
+        self.assertIn("Steep ramp", rejected["p2"]["reason"])
+        self.assertIn("steps", rejected["p2"]["reason"])
 
     def test_non_supported_places_are_added_to_things_to_confirm(self):
         state = self._state()
@@ -358,12 +363,16 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
         items = itinerary["days"][0]["items"]
         self.assertEqual(
             [item["accessibility"] for item in items],
-            ["n/a", "n/a", "flagged"],
+            ["n/a", "n/a"],
         )
         self.assertEqual(items[0]["place_id"], "meal-break")
         self.assertEqual(items[1]["place_id"], "rest-break")
         self.assertNotIn("Lunch break", " ".join(itinerary["things_to_confirm"]))
         self.assertNotIn("Hotel rest", " ".join(itinerary["things_to_confirm"]))
+        self.assertIn(
+            "restaurant-1",
+            {entry["place_id"] for entry in itinerary["not_scheduled"]},
+        )
 
 
 class TestTools(unittest.TestCase):
@@ -425,6 +434,21 @@ class TestTools(unittest.TestCase):
             [r["id"] for r in results],
             "a place with an explicit 'no' should fall outside the capped shortlist",
         )
+
+    def test_replacement_search_excludes_already_checked_places(self):
+        first = self.tools["search_activities"]({"city": "Amsterdam", "limit": 2})
+        excluded_id = first["results"][0]["id"]
+        replacement_tools = build_toolset(
+            self.repo,
+            ["step_free_entrance"],
+            6,
+            exclude_place_ids={excluded_id},
+        )
+        replacements = replacement_tools["search_activities"](
+            {"city": "Amsterdam", "limit": 2}
+        )
+        self.assertNotIn(excluded_id, [row["id"] for row in replacements["results"]])
+        self.assertEqual(len(replacements["results"]), 2)
 
 
 class TestTravelEstimates(unittest.TestCase):
@@ -532,6 +556,66 @@ class TestRetrievalRecall(unittest.TestCase):
 
         self.assertEqual(specific, [], "city notes must not count as venue evidence")
         self.assertTrue(general, "city-scope notes should still be retrievable")
+
+    def test_google_place_semantic_fallback_searches_destination_first(self):
+        class DestinationAwareVectors:
+            def __init__(self):
+                self.filters = []
+
+            def query(self, vector, top_k, flt=None):
+                self.filters.append(flt)
+                if flt == {"city": "Rome"}:
+                    return [
+                        Match(
+                            "rome-capitoline",
+                            0.8,
+                            "Capitoline Museums provides lift access to the galleries.",
+                            {"city": "Rome", "source": "guide"},
+                        )
+                    ]
+                return []
+
+        vectors = DestinationAwareVectors()
+        ctx = SimpleNamespace(
+            settings=SimpleNamespace(budget=SimpleNamespace(rag_top_k=5)),
+            embedder=SimpleNamespace(embed=lambda texts: [[0.1]]),
+            vectors=vectors,
+        )
+        candidate = Candidate(
+            "gmp:google-id", "Capitoline Museums", "activity", {}
+        )
+
+        specific, _ = retrieve_evidence(
+            ctx, candidate, "Rome", ["step_free_entrance", "lift_access"]
+        )
+
+        self.assertTrue(specific)
+        self.assertIn({"city": "Rome"}, vectors.filters)
+
+
+class TestConcernReplacementRouting(unittest.TestCase):
+    def _state(self, finder_rounds: int) -> RunState:
+        state = RunState("Two days in Rome using a wheelchair")
+        state.profile = {"destination": "Rome", "trip_days": 2}
+        state.finder_rounds = finder_rounds
+        state.candidates["gmp:flagged"] = Candidate(
+            "gmp:flagged",
+            "Museum With Steps",
+            "activity",
+            {},
+            verdict="flagged",
+            verdict_detail={"summary": "The only entrance described has steps."},
+        )
+        return state
+
+    def test_concern_triggers_one_replacement_search(self):
+        decision = decide(SimpleNamespace(), self._state(finder_rounds=1))
+        self.assertEqual(decision.next_module, "ActivityLogisticsFinder")
+        self.assertIn("Museum With Steps", decision.instruction)
+
+    def test_concern_does_not_create_an_unbounded_search_loop(self):
+        decision = decide(SimpleNamespace(), self._state(finder_rounds=2))
+        self.assertEqual(decision.next_module, "SchedulePlanner")
 
 
 class TestFollowUpTurns(unittest.TestCase):

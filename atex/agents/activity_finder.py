@@ -107,7 +107,13 @@ def _fallback_select(ctx: AgentContext, state: RunState, observations) -> int:
 def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
     profile = state.profile or {}
     budget = ctx.settings.budget
-    tools = build_toolset(ctx.repo, state.required_needs, budget.max_candidates_per_search)
+    previously_checked = set(state.candidates)
+    tools = build_toolset(
+        ctx.repo,
+        state.required_needs,
+        budget.max_candidates_per_search,
+        exclude_place_ids=previously_checked,
+    )
 
     observations: list[dict[str, Any]] = []
     finished = False

@@ -20,7 +20,7 @@ from ..util import truncate
 
 DEFAULT_NEEDS = ["step_free_entrance", "accessible_toilet"]
 EVIDENCE_CHARS = 700
-SEMANTIC_CANDIDATE_POOL = 40
+SEMANTIC_CANDIDATE_POOL = 80
 
 
 def _normalise_name(value: str) -> str:
@@ -108,17 +108,42 @@ def retrieve_evidence(
     seen = {match.id for match in specific_matches}
 
     if len(specific_matches) < top_k:
-        semantic = ctx.vectors.query(
-            query_vector,
-            top_k=max(SEMANTIC_CANDIDATE_POOL, top_k * 8),
-        )
-        for match in semantic:
-            if match.id in seen or not _mentions_candidate(match, candidate):
-                continue
-            specific_matches.append(match)
-            seen.add(match.id)
-            if len(specific_matches) >= top_k:
-                break
+        # Google Place IDs cannot equal IDs from the older CSV corpus. Search
+        # inside the destination first so a venue article is not crowded out
+        # by the other ~15k vectors, then retain only passages that explicitly
+        # name this candidate. The unfiltered pass covers records whose city
+        # metadata is absent while keeping the same identity check.
+        semantic_pools = []
+        if city:
+            semantic_pools.append(
+                ctx.vectors.query(
+                    query_vector,
+                    top_k=max(SEMANTIC_CANDIDATE_POOL, top_k * 12),
+                    flt={"city": city},
+                )
+            )
+        for pool in semantic_pools:
+            for match in pool:
+                if match.id in seen or not _mentions_candidate(match, candidate):
+                    continue
+                specific_matches.append(match)
+                seen.add(match.id)
+                if len(specific_matches) >= top_k:
+                    break
+
+        # Only pay for the global fallback when destination-scoped retrieval
+        # did not already fill the evidence batch.
+        if len(specific_matches) < top_k:
+            for match in ctx.vectors.query(
+                query_vector,
+                top_k=max(SEMANTIC_CANDIDATE_POOL, top_k * 12),
+            ):
+                if match.id in seen or not _mentions_candidate(match, candidate):
+                    continue
+                specific_matches.append(match)
+                seen.add(match.id)
+                if len(specific_matches) >= top_k:
+                    break
 
     specific = [
         to_entry(match, place_specific=True) for match in specific_matches[:top_k]
@@ -235,7 +260,8 @@ def validate_batch(
         specific, general = retrieve_evidence(ctx, candidate, city, needs)
         if not specific:
             ctx.trace.note(
-                f"AccessibilityValidator: no evidence for {candidate.place_id}; "
+                f"AccessibilityValidator: no evidence for {candidate.name} "
+                f"({candidate.place_id}); "
                 "returned unknown without an LLM call"
             )
             _assign(

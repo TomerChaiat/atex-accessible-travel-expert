@@ -18,7 +18,7 @@ from ..state import RunState
 from ..tools import travel_matrix
 from ..util import truncate
 
-RANK = {"supported": 0, "flagged": 1, "unknown": 2, None: 3}
+RANK = {"supported": 0, "unknown": 1, "flagged": 2, None: 3}
 GENERIC_PLACEHOLDER_NAMES = {
     "break",
     "free time",
@@ -62,7 +62,7 @@ def _canonical_placeholder_id(item: dict[str, Any]) -> str:
 
 
 def _ordered_candidates(state: RunState) -> list:
-    """Supported first, then flagged, then unknown -- but keep them all.
+    """Order candidates for planning while retaining rejected ones in state.
 
     Dropping unknowns would quietly hide exactly the information the traveller
     most needs to see.
@@ -70,6 +70,25 @@ def _ordered_candidates(state: RunState) -> list:
     return sorted(
         state.candidates.values(),
         key=lambda c: (RANK.get(c.verdict, 3), c.kind != "activity", c.name),
+    )
+
+
+def _flagged_reason(candidate: Any) -> str:
+    """Turn the validator's structured result into a concrete user-facing reason."""
+    detail = candidate.verdict_detail or {}
+    parts: list[str] = []
+    summary = str(detail.get("summary") or "").strip()
+    if summary:
+        parts.append(summary)
+    concerns = [str(value).strip() for value in (detail.get("concerns") or []) if value]
+    if concerns:
+        parts.append("Concerns: " + "; ".join(concerns[:2]))
+    unmet = [str(value).replace("_", " ") for value in (detail.get("unmet_needs") or [])]
+    if unmet:
+        parts.append("Unmet needs: " + ", ".join(unmet[:3]))
+    return truncate(
+        " ".join(parts) or "The accessibility evidence conflicts with the traveller's needs.",
+        320,
     )
 
 
@@ -99,8 +118,12 @@ def _enforce_verdicts(state: RunState, itinerary: dict[str, Any]) -> dict[str, A
                 item["accessibility"] = "n/a"
             elif candidate is not None:
                 verdict = candidate.verdict or "unknown"
+                if verdict == "flagged":
+                    # Defense in depth: even if the planner ignored its prompt,
+                    # a venue with known concerns cannot reach the itinerary.
+                    continue
                 item["accessibility"] = verdict
-                if verdict in ("flagged", "unknown"):
+                if verdict == "unknown":
                     scheduled_non_ok.append(
                         (candidate.place_id, str(item.get("name") or place_id), verdict)
                     )
@@ -155,27 +178,63 @@ def _enforce_verdicts(state: RunState, itinerary: dict[str, Any]) -> dict[str, A
     itinerary.setdefault("warnings", [])
     itinerary.setdefault("summary", "")
 
-    # The hotel has its own section in the response, so listing it as an
-    # unscheduled activity reads as a mistake.
+    # Preserve model-provided spare reasons, then deterministically add every
+    # rejected candidate with the validator's concrete explanation. The model
+    # never gets to hide a concern by omitting it from not_scheduled.
     not_scheduled = [
         entry
         for entry in (itinerary.get("not_scheduled") or [])
-        if not (isinstance(entry, dict) and entry.get("place_id") == state.selected_hotel_id)
+        if not (
+            isinstance(entry, dict)
+            and entry.get("place_id") == state.selected_hotel_id
+            and state.candidates.get(str(state.selected_hotel_id or "")) is not None
+            and state.candidates[str(state.selected_hotel_id)].verdict != "flagged"
+        )
     ]
+    listed_ids = {
+        str(entry.get("place_id") or "")
+        for entry in not_scheduled
+        if isinstance(entry, dict)
+    }
+    for candidate in state.by_verdict("flagged"):
+        if candidate.place_id in listed_ids:
+            # Replace a generic model reason with the validator's explanation.
+            for entry in not_scheduled:
+                if isinstance(entry, dict) and entry.get("place_id") == candidate.place_id:
+                    entry["reason"] = _flagged_reason(candidate)
+            continue
+        not_scheduled.append(
+            {
+                "place_id": candidate.place_id,
+                "name": candidate.name,
+                "reason": _flagged_reason(candidate),
+            }
+        )
     itinerary["not_scheduled"] = not_scheduled
     return itinerary
 
 
 def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
-    candidates = _ordered_candidates(state)
+    all_candidates = _ordered_candidates(state)
+    candidates = [candidate for candidate in all_candidates if candidate.verdict != "flagged"]
     if not candidates:
-        state.itinerary = {
-            "summary": "The live place search returned no candidate places for this request.",
+        message = (
+            "No candidate could be scheduled without known accessibility concerns."
+            if all_candidates
+            else "The live place search returned no candidate places for this request."
+        )
+        warning = (
+            "Flagged venues were excluded rather than presented as recommendations."
+            if all_candidates
+            else "No matching places were returned; no venues were invented."
+        )
+        state.itinerary = _enforce_verdicts(state, {
+            "summary": message,
             "days": [],
             "not_scheduled": [],
-            "warnings": ["No matching places were returned; no venues were invented."],
+            "warnings": [warning],
             "things_to_confirm": [],
-        }
+        })
         state.log("SchedulePlanner: nothing to schedule")
         return
 
