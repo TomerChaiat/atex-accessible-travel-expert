@@ -93,13 +93,18 @@ def extract_json_object(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
+    # Some providers concatenate several otherwise valid JSON objects when a
+    # prompt describes an iterative tool loop. Decode the first complete object
+    # instead of treating all trailing objects as part of one malformed value.
+    decoder = json.JSONDecoder()
+    for start, char in enumerate(text):
+        if char != "{":
+            continue
         try:
-            parsed = json.loads(text[start : end + 1])
+            parsed, _ = decoder.raw_decode(text[start:])
             if isinstance(parsed, dict):
                 return parsed
         except json.JSONDecodeError:
-            pass
+            continue
 
     raise ValueError(f"could not parse a JSON object from model output: {text[:200]!r}")

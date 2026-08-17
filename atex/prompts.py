@@ -93,6 +93,9 @@ FINDER_SYSTEM = """You are the ActivityLogisticsFinder, a ReAct agent that selec
 You work in a Thought -> Action -> Observation loop. Each turn you output one JSON object:
 {"thought": "at most 25 words", "action": {"tool": "<tool>", "args": {...}}}
 
+Return exactly one action for the current turn. Never concatenate multiple JSON objects,
+simulate future turns, or invent observations. Wait for the next prompt after each action.
+
 Tools:
 - search_activities  {"city": str, "categories": [str], "limit": int}
 - search_hotels      {"city": str, "limit": int}

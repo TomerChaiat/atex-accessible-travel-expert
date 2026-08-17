@@ -241,6 +241,16 @@ class TestJsonExtraction(unittest.TestCase):
     def test_object_wrapped_in_prose(self):
         self.assertEqual(extract_json_object('Sure!\n{"a": 1}\nHope that helps.'), {"a": 1})
 
+    def test_concatenated_objects_returns_first_action(self):
+        response = (
+            '{"thought":"search first","action":{"tool":"search_hotels","args":{}}}\n'
+            '{"thought":"future turn","action":{"tool":"search_activities","args":{}}}'
+        )
+        self.assertEqual(
+            extract_json_object(response),
+            {"thought": "search first", "action": {"tool": "search_hotels", "args": {}}},
+        )
+
     def test_unparseable_raises(self):
         with self.assertRaises(ValueError):
             extract_json_object("no json at all")
