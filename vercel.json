@@ -5,5 +5,11 @@
       "maxDuration": 300,
       "includeFiles": "{atex,data,public}/**"
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    }
+  ]
 }
