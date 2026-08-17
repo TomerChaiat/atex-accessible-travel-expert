@@ -208,4 +208,4 @@ def index_html() -> tuple[int, str]:
     try:
         return 200, path.read_text(encoding="utf-8")
     except OSError:
-        return 500, "<h1>ATEX</h1><p>web/index.html is missing.</p>"
+        return 500, "<h1>ATEX</h1><p>public/index.html is missing.</p>"

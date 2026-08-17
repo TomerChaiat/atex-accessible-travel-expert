@@ -3,13 +3,7 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 300,
-      "includeFiles": "{atex,data,web}/**"
+      "includeFiles": "{atex,data,public}/**"
     }
-  },
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api/index"
-    }
-  ]
+  }
 }

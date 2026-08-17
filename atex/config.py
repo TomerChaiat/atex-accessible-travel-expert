@@ -21,7 +21,7 @@ DATA_DIR = ROOT / "data"
 SEED_DIR = DATA_DIR / "seed"
 KB_DIR = DATA_DIR / "kb"
 SESSION_DIR = DATA_DIR / "sessions"
-WEB_DIR = ROOT / "web"
+WEB_DIR = ROOT / "public"
 STATIC_DIR = ROOT / "atex" / "static"
 
 
