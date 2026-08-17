@@ -1,0 +1,10 @@
+{
+  "_todo": "Replace every placeholder below before submission. group_batch_order_number comes from the presentation list and must be in the form {batch#}_{order#}.",
+  "group_batch_order_number": "TODO_batch#_order#",
+  "team_name": "ATEX",
+  "students": [
+    { "name": "TODO Student A", "email": "todo-a@campus.technion.ac.il" },
+    { "name": "TODO Student B", "email": "todo-b@campus.technion.ac.il" },
+    { "name": "TODO Student C", "email": "todo-c@campus.technion.ac.il" }
+  ]
+}

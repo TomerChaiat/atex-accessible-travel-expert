@@ -1,0 +1,197 @@
+{
+  "_provenance": "SYNTHETIC DEMO CORPUS. Every chunk below was written by hand to exercise the retrieval and verdict logic offline. None of it is quoted or derived from WheelchairTravel.org, WheelchairTraveling.com, TripAdvisor, or any other real source, and none of it should be presented to a user as verified accessibility information. Replace this file with real ingested passages via scripts/ingest_kb.py before any live use.",
+  "_generated": "2026-08-07",
+  "_note": "Several places in data/seed/ deliberately have NO chunk here, so the AccessibilityValidator is forced to return 'unknown' for them. That path is a feature, not a gap.",
+  "chunks": [
+    {
+      "id": "kb-ams-rijksmuseum-1",
+      "place_id": "ams-rijksmuseum",
+      "city": "Amsterdam",
+      "text": "Visitor report: the main entrance from the passage is step free and both wings are reachable by lift. Accessible toilets are located on the lower level near the cloakroom. Manual wheelchairs can be borrowed free of charge at the information desk, though numbers are limited on busy weekends. Wide doorways throughout the gallery floors; the atrium can echo loudly when school groups arrive.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-ams-vangogh-1",
+      "place_id": "ams-van-gogh-museum",
+      "city": "Amsterdam",
+      "text": "Visitor report: entrance via the glass hall is level with automatic doors. Lifts connect all four exhibition floors and are large enough for a powered chair. Accessible toilets on the ground and second floors. Wheelchairs are available to borrow but cannot be reserved in advance. Timed entry keeps corridors manageable, but the ground floor shop area gets congested near closing.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-ams-annefrank-1",
+      "place_id": "ams-anne-frank-house",
+      "city": "Amsterdam",
+      "text": "Visitor report: this site is not suitable for wheelchair users who cannot transfer and climb. The historic annexe is reached only by original staircases that are extremely steep and narrow, including a near-vertical flight behind the bookcase. There is no lift to the annexe rooms. The modern entrance area, introductory exhibition and cafe are step free, so part of the visit is possible, but the core of the museum is not.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-ams-vondelpark-1",
+      "place_id": "ams-vondelpark",
+      "city": "Amsterdam",
+      "text": "Visitor report: paths through the park are asphalt and consistently flat, making it easy going for a manual wheelchair without an assistant. Entrances at every corner are step free. Public accessible toilets exist near the main pavilion but are sometimes closed outside summer months. Quiet in early morning; the open-air theatre area gets loud on weekend afternoons.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-ams-cruise-1",
+      "place_id": "ams-canal-cruise-accessible",
+      "city": "Amsterdam",
+      "text": "Visitor report: boarding accessibility varies sharply between operators on the same stretch of quay. Some boats have a portable ramp and a level deck area with removable seating; others require a step down into a sunken cabin. On-board toilets are usually too narrow for a wheelchair. Contact the specific operator to confirm a ramp-equipped boat is scheduled for your departure, as availability changes daily.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-ams-hotel-canal-1",
+      "place_id": "ams-hotel-canal-district",
+      "city": "Amsterdam",
+      "text": "Synthetic property description: the lobby is reached at street level with no threshold. Two adapted rooms have roll-in showers with fold-down seats, grab rails on both sides of the toilet, and 90cm clear doorways. The lift serves every floor. Accessible parking is off site, roughly 200 metres away.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-ams-hotel-oosterpark-1",
+      "place_id": "ams-hotel-oosterpark",
+      "city": "Amsterdam",
+      "text": "Synthetic property description: entrance and lift are step free. The adapted bathroom has a grab rail beside the toilet, but the shower has a raised lip of about 4cm at the entry, which some wheelchair users report as a genuine obstacle. Staff can supply a shower chair on request. Rooms facing the park are noticeably quieter.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-bcn-sagrada-1",
+      "place_id": "bcn-sagrada-familia",
+      "city": "Barcelona",
+      "text": "Visitor report: a dedicated step-free entrance is available on the Nativity side and staff will direct wheelchair users past the main queue. The basilica floor is entirely level with generous circulation space. Accessible toilets are in the lower crypt level, reached by lift. The tower visit involves a lift up but stairs down and is not wheelchair accessible.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-bcn-parkguell-1",
+      "place_id": "bcn-park-guell",
+      "city": "Barcelona",
+      "text": "Visitor report: mixed. The monumental zone sits on a hillside and several of the obvious routes involve steps or gradients steeper than 10 percent. A signposted step-free route reaches the terrace and the mosaic bench, but it is indirect and adds distance. Outdoor escalators on the approach from the metro are helpful but are frequently out of service. Self-propelling a manual chair is hard work here; an assistant is strongly advised.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-bcn-beach-1",
+      "place_id": "bcn-barceloneta-beach",
+      "city": "Barcelona",
+      "text": "Visitor report: timber boardwalks run from the promenade across the sand to the assisted bathing point. Amphibious chairs and trained assistants are available, but only during the summer season and only within posted staffed hours, typically late morning to early evening. Accessible toilets and a rinse shower are at the service module. Outside the season the boardwalk remains but the assistance service does not operate.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-bcn-ciutadella-1",
+      "place_id": "bcn-ciutadella-park",
+      "city": "Barcelona",
+      "text": "Visitor report: level paved paths on the main axes and step-free entrances from Passeig de Picasso. A calm alternative to the busier sights, with shaded seating. Accessible toilets near the lake are open irregularly and cannot be relied on.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-ber-neues-1",
+      "place_id": "ber-neues-museum",
+      "city": "Berlin",
+      "text": "Visitor report: step-free entry from the colonnade courtyard, and lifts reach every exhibition level. Loan wheelchairs are kept at the cloakroom. Accessible toilets on the ground floor. Some historic rooms have slightly uneven original flooring but nothing that blocks a chair. Generally quiet on weekday mornings.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-ber-reichstag-1",
+      "place_id": "ber-reichstag-dome",
+      "city": "Berlin",
+      "text": "Visitor report: registration in advance is mandatory and the form asks about accessibility needs. A lift takes visitors to the roof terrace, and the dome's interior spiral is a continuous ramp with no steps, so the full ascent is possible in a wheelchair. The ramp is long, and the gradient is tiring to self-propel. Accessible toilets on the roof terrace level.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-ber-eastside-1",
+      "place_id": "ber-east-side-gallery",
+      "city": "Berlin",
+      "text": "Visitor report: the pavement alongside the painted wall is flat, wide and continuous for the full 1.3km, so the artwork is easy to view from a chair. However there are no public accessible toilets along the stretch itself, and the nearest reliable one is at the station at the eastern end. Plan the direction of travel accordingly. Little shade or seating.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-ber-jewish-1",
+      "place_id": "ber-jewish-museum",
+      "city": "Berlin",
+      "text": "Visitor report: comprehensively step free with lifts throughout and loan wheelchairs at the entrance. Accessible parking on site. Note that parts of the building use intentionally sloping floors and narrow angled corridors as an architectural device; these are navigable but can be disorienting, and some visitors with sensory sensitivities find the Axes and the Void spaces distressing. Staff can advise a route that avoids them.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-ber-hotel-kreuzberg-1",
+      "place_id": "ber-hotel-kreuzberg",
+      "city": "Berlin",
+      "text": "Synthetic property description: there is one step of roughly 12cm at the courtyard entrance. Reception keeps a portable ramp and will deploy it on request, but it must be arranged at check-in rather than on arrival. Once inside, the lift serves all floors. The adapted bathroom is compact and the turning circle is tight for a larger powered chair.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-general-transit-ams-1",
+      "place_id": null,
+      "city": "Amsterdam",
+      "text": "General city note: most Amsterdam trams are low floor at the centre door and carry a boarding ramp, but older tram types on some lines still have steps. Metro stations are lifted. The biggest practical obstacles in the centre are cobbled streets, narrow pavements crowded with parked bicycles, and canal bridges with short steep approaches.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-general-transit-bcn-1",
+      "place_id": null,
+      "city": "Barcelona",
+      "text": "General city note: nearly all metro stations have lifts, and city buses are low floor with ramps and a designated wheelchair space. The Eixample grid has wide level pavements with dropped kerbs at most corners. The Gothic Quarter and El Born are the difficult areas, with narrow cobbled lanes and frequent single steps into premises.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    },
+    {
+      "id": "kb-general-transit-ber-1",
+      "place_id": null,
+      "city": "Berlin",
+      "text": "General city note: S-Bahn and U-Bahn coverage is good but not complete, and a minority of stations still lack a working lift, so check the specific station before relying on it. Buses are low floor with ramps. Pavements in Mitte are wide and level; some Friedrichshain and Kreuzberg side streets retain rough cobbles.",
+      "source": "ATEX synthetic demo corpus",
+      "source_url": "",
+      "provenance": "synthetic-demo",
+      "retrieved_at": "2026-08-07"
+    }
+  ]
+}

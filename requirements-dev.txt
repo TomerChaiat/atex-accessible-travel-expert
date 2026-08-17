@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Development-only. None of these ship to Vercel.
+pytest>=8.0
+uvicorn>=0.30      # local server: uvicorn atex.app:app --reload
+pillow>=10.0       # regenerating the architecture PNG

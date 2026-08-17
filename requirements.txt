@@ -1,0 +1,8 @@
+# Runtime dependencies, kept deliberately small for the Vercel Python bundle.
+#
+# The agent core under atex/ imports ONLY the standard library -- including all
+# outbound HTTP (urllib), so there is no httpx/requests dependency. FastAPI is
+# used purely as the ASGI edge in atex/app.py; every endpoint's actual logic
+# lives in atex/api.py and is exercised by the tests without any install.
+fastapi>=0.115
+pydantic>=2.9

@@ -9,6 +9,14 @@ __pycache__/
 .DS_Store
 data/sessions/
 
+# The developer-wide Git ignore file excludes *.txt, *.json and *.png.
+# These project files are required by the Vercel build and runtime.
+!requirements.txt
+!requirements-dev.txt
+!vercel.json
+!data/**/*.json
+!atex/static/*.png
+
 # The course assignment PDF is the lecturer's document, not ours to republish
 # in a public repository. Keep it locally.
 Project.pdf
