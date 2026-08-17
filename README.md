@@ -102,16 +102,16 @@ so a venue's own passages can never be crowded out into a false `unknown`.
 
 ## Budget guardrails
 
-All limits live in `Budget` (`atex/config.py`) and are overridable by env var.
+All limits live in `Budget` (`atex/config.py`).
 
-| Limit | Default | Env |
-|---|---|---|
-| Supervisor turns | 8 | `ATEX_MAX_SUPERVISOR_TURNS` |
-| Total LLM calls | 20 | `ATEX_MAX_TOTAL_LLM_CALLS` |
-| Tokens per run | 60,000 | `ATEX_MAX_TOKENS_PER_RUN` |
-| Wall clock | 240s | `ATEX_WALL_CLOCK_BUDGET_S` |
-| ReAct iterations | 4 | `ATEX_REACT_MAX_ITERS` |
-| Validation batch | 3 | `ATEX_VALIDATION_BATCH` |
+| Limit | Configured value |
+|---|---|
+| Supervisor turns | 8 |
+| Total LLM calls | 20 |
+| Tokens per run | 60,000 |
+| Wall clock | 240s |
+| ReAct iterations | 4 |
+| Validation batch | 3 |
 
 Each limit keeps a **reserve**. Crossing the soft limit is not an error: it
 hands control to *forced finalize*, which runs `SchedulePlanner` from the
@@ -174,11 +174,8 @@ and absent tags become `unknown` rather than a guess.
 
 1. Push to GitHub, import the repo in Vercel. `vercel.json` routes everything to
    `api/index.py`, which serves both the GUI and the endpoints.
-2. Add the production environment variables directly in the Vercel dashboard.
-   `LLMOD_API_KEY` enables the configured language and embedding models;
-   `PINECONE_API_KEY` and `PINECONE_INDEX_HOST` enable Pinecone; and
-   `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` enable Supabase. With none set,
-   the deployment still runs in offline mode.
+2. Add the five values listed in `.env.example` directly in the Vercel
+   dashboard. With none set, the deployment still runs in offline mode.
 3. Verify production matches development:
 
 ```bash

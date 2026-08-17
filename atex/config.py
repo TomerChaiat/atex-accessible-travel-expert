@@ -2,10 +2,9 @@
 
 Two ideas drive this module:
 
-1. Every external dependency (LLM, embeddings, vector DB, relational DB) is
-   selected by name here and resolved to a *fake* offline implementation when
-   its credentials are absent. The system therefore boots and runs a full
-   itinerary with no API keys at all.
+1. The five deployment-specific LLMod.ai and Pinecone values come from the
+   environment. Models, backend selection and operational limits are code
+   configuration. Missing credentials select the offline implementations.
 2. All cost/latency limits live in one `Budget` object rather than being
    scattered through the agents, so they can be tuned or tightened in one place
    and asserted against in tests.
@@ -28,20 +27,6 @@ STATIC_DIR = ROOT / "atex" / "static"
 
 def _env(name: str, default: str = "") -> str:
     return (os.environ.get(name) or default).strip()
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(_env(name) or default)
-    except ValueError:
-        return default
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(_env(name) or default)
-    except ValueError:
-        return default
 
 
 @dataclass(frozen=True)
@@ -75,37 +60,6 @@ class Budget:
 
     llm_timeout_s: float = 60.0
     llm_max_retries: int = 2
-
-    @classmethod
-    def from_env(cls) -> "Budget":
-        d = cls()
-        return cls(
-            max_supervisor_turns=_env_int("ATEX_MAX_SUPERVISOR_TURNS", d.max_supervisor_turns),
-            max_total_llm_calls=_env_int("ATEX_MAX_TOTAL_LLM_CALLS", d.max_total_llm_calls),
-            max_tokens_per_run=_env_int("ATEX_MAX_TOKENS_PER_RUN", d.max_tokens_per_run),
-            wall_clock_budget_s=_env_float("ATEX_WALL_CLOCK_BUDGET_S", d.wall_clock_budget_s),
-            react_max_iters=_env_int("ATEX_REACT_MAX_ITERS", d.react_max_iters),
-            rag_top_k=_env_int("ATEX_RAG_TOP_K", d.rag_top_k),
-            max_candidates_per_search=_env_int(
-                "ATEX_MAX_CANDIDATES", d.max_candidates_per_search
-            ),
-            max_validations_per_run=_env_int(
-                "ATEX_MAX_VALIDATIONS", d.max_validations_per_run
-            ),
-            validation_batch_size=_env_int(
-                "ATEX_VALIDATION_BATCH", d.validation_batch_size
-            ),
-            llm_timeout_s=_env_float("ATEX_LLM_TIMEOUT_S", d.llm_timeout_s),
-        )
-
-
-def _resolve(explicit: str, has_credentials: bool, real: str, fake: str) -> str:
-    """Pick a backend: an explicit env override wins, otherwise auto-detect."""
-    choice = (explicit or "auto").lower()
-    if choice in (real, fake):
-        return choice
-    return real if has_credentials else fake
-
 
 @dataclass(frozen=True)
 class Settings:
@@ -146,38 +100,22 @@ def load_settings() -> Settings:
     llmod_key = _env("LLMOD_API_KEY")
     pinecone_key = _env("PINECONE_API_KEY")
     pinecone_host = _env("PINECONE_INDEX_HOST")
-    supabase_url = _env("SUPABASE_URL")
-    supabase_key = _env("SUPABASE_SERVICE_KEY")
 
     return Settings(
-        llm_backend=_resolve(_env("ATEX_LLM_BACKEND"), bool(llmod_key), "llmod", "fake"),
-        embedding_backend=_resolve(
-            _env("ATEX_EMBEDDING_BACKEND"), bool(llmod_key), "llmod", "fake"
-        ),
-        vector_backend=_resolve(
-            _env("ATEX_VECTOR_BACKEND"),
-            bool(pinecone_key and pinecone_host),
-            "pinecone",
-            "memory",
-        ),
-        repository_backend=_resolve(
-            _env("ATEX_REPOSITORY_BACKEND"),
-            bool(supabase_url and supabase_key),
-            "supabase",
-            "local",
-        ),
+        llm_backend="llmod" if llmod_key else "fake",
+        embedding_backend="llmod" if llmod_key else "fake",
+        vector_backend="pinecone" if pinecone_key and pinecone_host else "memory",
+        repository_backend="local",
         llmod_api_key=llmod_key,
         llmod_base_url=_env("LLMOD_BASE_URL", "https://api.llmod.ai/v1").rstrip("/"),
-        text_model=_env("LLMOD_TEXT_MODEL", "MB5R2CF-azure/gpt-5.4-mini"),
-        embedding_model=_env(
-            "LLMOD_EMBEDDING_MODEL", "MB5R2CF-azure/text-embedding-3-small"
-        ),
+        text_model="MB5R2CF-azure/gpt-5.4-mini",
+        embedding_model="MB5R2CF-azure/text-embedding-3-small",
         pinecone_api_key=pinecone_key,
         pinecone_index_host=pinecone_host.rstrip("/"),
         pinecone_namespace=_env("PINECONE_NAMESPACE", "atex-accessibility"),
-        supabase_url=supabase_url.rstrip("/"),
-        supabase_service_key=supabase_key,
-        budget=Budget.from_env(),
+        supabase_url="",
+        supabase_service_key="",
+        budget=Budget(),
     )
 
 
