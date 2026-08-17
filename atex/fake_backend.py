@@ -291,15 +291,15 @@ class FakeLLMBackend:
         positives = [p for p in POSITIVE_EVIDENCE if p in blob]
 
         if negatives:
-            verdict, confidence = "flagged", 0.75
+            verdict = "flagged"
             concerns = [f"Evidence mentions: {p}" for p in negatives[:3]]
             summary = "The evidence describes barriers that conflict with the stated needs."
         elif conditionals:
-            verdict, confidence = "flagged", 0.6
+            verdict = "flagged"
             concerns = [f"Conditional: {p}" for p in conditionals[:3]]
             summary = "Access appears conditional, seasonal, or dependent on arranging ahead."
         elif positives:
-            verdict, confidence = "supported", 0.7
+            verdict = "supported"
             concerns = []
             summary = "The evidence directly describes step-free access and accessible facilities."
         else:
@@ -310,7 +310,6 @@ class FakeLLMBackend:
         return {
             "place_id": place_id,
             "verdict": verdict,
-            "confidence": confidence,
             "met_needs": needs if verdict == "supported" else [],
             "unmet_needs": needs[:1] if (verdict == "flagged" and negatives) else [],
             "concerns": concerns,
@@ -426,7 +425,6 @@ def _unknown_verdict(place_id: str, summary: str) -> dict[str, Any]:
     return {
         "place_id": place_id,
         "verdict": "unknown",
-        "confidence": 0.0,
         "met_needs": [],
         "unmet_needs": [],
         "concerns": [],

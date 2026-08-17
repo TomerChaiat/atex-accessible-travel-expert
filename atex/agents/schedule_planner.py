@@ -18,6 +18,46 @@ from ..tools import travel_matrix
 from ..util import truncate
 
 RANK = {"supported": 0, "flagged": 1, "unknown": 2, None: 3}
+GENERIC_PLACEHOLDER_NAMES = {
+    "break",
+    "free time",
+    "hotel rest",
+    "lunch",
+    "lunch break",
+    "meal break",
+    "rest",
+    "rest and recharge",
+    "rest break",
+}
+
+
+def _normalise_label(value: Any) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
+def _is_generic_placeholder(item: dict[str, Any], candidate: Any) -> bool:
+    """Return true when an itinerary row does not identify a real venue."""
+    kind = _normalise_label(item.get("kind"))
+    name = _normalise_label(item.get("name"))
+    if kind in {"rest", "transfer"}:
+        return True
+    if name in GENERIC_PLACEHOLDER_NAMES:
+        return True
+    if name.startswith(("hotel rest ", "lunch break ", "meal break ", "rest break ")):
+        return True
+    # A meal receives a verdict only if the row actually names a selected
+    # restaurant. The model must not borrow an attraction or hotel ID.
+    return kind == "meal" and (candidate is None or candidate.kind != "restaurant")
+
+
+def _canonical_placeholder_id(item: dict[str, Any]) -> str:
+    kind = _normalise_label(item.get("kind"))
+    name = _normalise_label(item.get("name"))
+    if kind == "meal" or "lunch" in name or "meal" in name:
+        return "meal-break"
+    if kind == "transfer":
+        return "transfer"
+    return "rest-break"
 
 
 def _ordered_candidates(state: RunState) -> list:
@@ -33,7 +73,6 @@ def _ordered_candidates(state: RunState) -> list:
 
 
 def _enforce_verdicts(state: RunState, itinerary: dict[str, Any]) -> dict[str, Any]:
-    verdicts = {c.place_id: (c.verdict or "unknown") for c in state.candidates.values()}
     scheduled_non_ok: list[tuple[str, str, str]] = []
 
     days = itinerary.get("days")
@@ -51,12 +90,18 @@ def _enforce_verdicts(state: RunState, itinerary: dict[str, Any]) -> dict[str, A
                 continue
             place_id = item.get("place_id")
             kind = str(item.get("kind") or "activity")
-            if place_id in verdicts:
-                verdict = verdicts[place_id]
+            candidate = state.candidates.get(str(place_id or ""))
+            if _is_generic_placeholder(item, candidate):
+                # Generic downtime has no venue and therefore no accessibility
+                # claim. Also detach any candidate ID the model borrowed.
+                item["place_id"] = _canonical_placeholder_id(item)
+                item["accessibility"] = "n/a"
+            elif candidate is not None:
+                verdict = candidate.verdict or "unknown"
                 item["accessibility"] = verdict
                 if verdict in ("flagged", "unknown"):
                     scheduled_non_ok.append(
-                        (place_id, str(item.get("name") or place_id), verdict)
+                        (candidate.place_id, str(item.get("name") or place_id), verdict)
                     )
             elif kind in ("rest", "transfer", "meal"):
                 # A generic break the planner invented rather than a real venue;
@@ -73,7 +118,19 @@ def _enforce_verdicts(state: RunState, itinerary: dict[str, Any]) -> dict[str, A
 
     itinerary["days"] = clean_days
 
-    confirm = [str(c) for c in (itinerary.get("things_to_confirm") or [])]
+    generic_confirmation_terms = (
+        "hotel rest",
+        "lunch break",
+        "meal break",
+        "rest and recharge",
+        "rest-break",
+        "meal-break",
+    )
+    confirm = [
+        str(c)
+        for c in (itinerary.get("things_to_confirm") or [])
+        if not any(term in str(c).casefold() for term in generic_confirmation_terms)
+    ]
     existing = " ".join(confirm).lower()
     noted: set[str] = set()
     for place_id, name, verdict in scheduled_non_ok:

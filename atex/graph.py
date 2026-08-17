@@ -116,7 +116,6 @@ def _forced_finalize(ctx: AgentContext, state: RunState) -> None:
         candidate.verdict = "unknown"
         candidate.verdict_detail = {
             "verdict": "unknown",
-            "confidence": 0.0,
             "summary": "Not checked: the planning budget ran out before validation.",
             "evidence_ids": [],
             "concerns": [],

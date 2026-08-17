@@ -9,6 +9,7 @@ one.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .. import ACCESSIBILITY_VALIDATOR
@@ -19,6 +20,55 @@ from ..util import truncate
 
 DEFAULT_NEEDS = ["step_free_entrance", "accessible_toilet"]
 EVIDENCE_CHARS = 700
+SEMANTIC_CANDIDATE_POOL = 40
+
+
+def _normalise_name(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", (value or "").casefold()))
+
+
+def _candidate_aliases(name: str) -> list[str]:
+    """Return conservative names that can prove a passage is about a place."""
+    without_note = re.sub(r"\([^)]*\)", " ", name or "")
+    aliases = {
+        _normalise_name(name),
+        _normalise_name(without_note),
+        _normalise_name(re.sub(r"\baccessible\b", " ", without_note, flags=re.I)),
+    }
+    return sorted((alias for alias in aliases if len(alias) >= 4), key=len, reverse=True)
+
+
+def _mentions_candidate(match: Any, candidate: Candidate) -> bool:
+    """Require semantic fallback evidence to explicitly identify the candidate."""
+    if str(match.metadata.get("place_id") or "") == candidate.place_id:
+        return True
+    searchable = [
+        match.text,
+        match.metadata.get("entity_name", ""),
+        match.metadata.get("title", ""),
+        match.metadata.get("thread_title", ""),
+    ]
+    haystack = _normalise_name(" ".join(str(value or "") for value in searchable))
+    return any(alias in haystack for alias in _candidate_aliases(candidate.name))
+
+
+def _candidate_excerpt(text: str, candidate: Candidate) -> str:
+    """Keep the candidate mention inside the passage shown to the validator."""
+    value = text or ""
+    for alias in _candidate_aliases(candidate.name):
+        tokens = alias.split()
+        pattern = r"\b" + r"\W+".join(re.escape(token) for token in tokens) + r"\b"
+        match = re.search(pattern, value, flags=re.I)
+        if not match:
+            continue
+        start = max(0, match.start() - 180)
+        excerpt = value[start : start + EVIDENCE_CHARS]
+        if start:
+            excerpt = "…" + excerpt
+        if start + EVIDENCE_CHARS < len(value):
+            excerpt += "…"
+        return excerpt
+    return truncate(value, EVIDENCE_CHARS)
 
 
 def _retrieval_query(candidate: Candidate, city: str, needs: list[str]) -> str:
@@ -31,28 +81,47 @@ def retrieve_evidence(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return (place-specific evidence, general city evidence).
 
-    Two filtered queries share one embedding. Filtering by place_id rather than
-    ranking the whole corpus guarantees that a venue's own passages are found:
-    an unfiltered top-k can crowd them out and produce a false "unknown", which
-    is the one failure mode this module must not have.
+    Exact catalogue IDs are preferred. The enriched corpus contains many useful
+    legacy records without catalogue place IDs, so a larger semantic search is
+    used as a fallback. A fallback passage is accepted as place-specific only
+    when its text or identity metadata explicitly names the candidate.
     """
     top_k = ctx.settings.budget.rag_top_k
     query_vector = ctx.embedder.embed([_retrieval_query(candidate, city, needs)])[0]
 
-    def to_entry(match) -> dict[str, Any]:
+    def to_entry(match, *, place_specific: bool = False) -> dict[str, Any]:
         return {
             "id": match.id,
-            "text": truncate(match.text, EVIDENCE_CHARS),
+            "text": (
+                _candidate_excerpt(match.text, candidate)
+                if place_specific
+                else truncate(match.text, EVIDENCE_CHARS)
+            ),
             "source": match.metadata.get("source", "unknown"),
             "provenance": match.metadata.get("provenance", "unknown"),
-            "score": round(match.score, 4),
         }
 
-    specific = [
-        to_entry(m)
-        for m in ctx.vectors.query(
-            query_vector, top_k=top_k, flt={"place_id": candidate.place_id}
+    exact = ctx.vectors.query(
+        query_vector, top_k=top_k, flt={"place_id": candidate.place_id}
+    )
+    specific_matches = list(exact)
+    seen = {match.id for match in specific_matches}
+
+    if len(specific_matches) < top_k:
+        semantic = ctx.vectors.query(
+            query_vector,
+            top_k=max(SEMANTIC_CANDIDATE_POOL, top_k * 8),
         )
+        for match in semantic:
+            if match.id in seen or not _mentions_candidate(match, candidate):
+                continue
+            specific_matches.append(match)
+            seen.add(match.id)
+            if len(specific_matches) >= top_k:
+                break
+
+    specific = [
+        to_entry(match, place_specific=True) for match in specific_matches[:top_k]
     ]
 
     general = []
@@ -70,7 +139,6 @@ def retrieve_evidence(
 def _unknown(reason: str) -> dict[str, Any]:
     return {
         "verdict": "unknown",
-        "confidence": 0.0,
         "met_needs": [],
         "unmet_needs": [],
         "concerns": [],
@@ -94,14 +162,8 @@ def _sanitize(result: dict[str, Any], evidence_ids: set[str]) -> dict[str, Any]:
     if verdict == "supported" and not cited:
         verdict = "unknown"
 
-    try:
-        confidence = float(result.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
-
     return {
         "verdict": verdict,
-        "confidence": 0.0 if verdict == "unknown" else max(0.0, min(confidence, 1.0)),
         "met_needs": [str(n) for n in (result.get("met_needs") or [])][:8],
         "unmet_needs": [str(n) for n in (result.get("unmet_needs") or [])][:8],
         "concerns": [str(c) for c in (result.get("concerns") or [])][:5],
@@ -129,7 +191,7 @@ def validate_batch(
 
     items: list[dict[str, Any]] = []
     with_evidence: list[Candidate] = []
-    evidence_ids: set[str] = set()
+    evidence_ids_by_place: dict[str, set[str]] = {}
 
     for candidate in batch:
         specific, general = retrieve_evidence(ctx, candidate, city, needs)
@@ -145,7 +207,7 @@ def validate_batch(
             continue
 
         evidence = specific + general
-        evidence_ids |= {e["id"] for e in evidence}
+        evidence_ids_by_place[candidate.place_id] = {e["id"] for e in evidence}
         items.append({"place": candidate.brief, "evidence": evidence})
         with_evidence.append(candidate)
 
@@ -173,7 +235,7 @@ def validate_batch(
                 f"AccessibilityValidator: no verdict returned for {candidate.place_id}"
             )
             continue
-        _assign(candidate, _sanitize(entry, evidence_ids))
+        _assign(candidate, _sanitize(entry, evidence_ids_by_place[candidate.place_id]))
 
 
 def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:

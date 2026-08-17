@@ -16,6 +16,16 @@ from .embeddings import Embedder, cosine_similarity
 from .httpjson import post_json
 
 
+def _public_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Remove internal enrichment fields before application code can see them."""
+    return {
+        key: value
+        for key, value in metadata.items()
+        if "confidence" not in key.strip().lower()
+        and key.strip().lower() != "classification_version"
+    }
+
+
 @dataclass
 class VectorRecord:
     id: str
@@ -151,7 +161,9 @@ class PineconeVectorStore:
                 "values": r.values,
                 # Pinecone rejects null metadata values, so drop them.
                 "metadata": {
-                    k: v for k, v in {**r.metadata, "text": r.text}.items() if v is not None
+                    k: v
+                    for k, v in _public_metadata({**r.metadata, "text": r.text}).items()
+                    if v is not None
                 },
             }
             for r in records
@@ -191,7 +203,7 @@ class PineconeVectorStore:
         )
         matches = []
         for item in data.get("matches") or []:
-            metadata = dict(item.get("metadata") or {})
+            metadata = _public_metadata(dict(item.get("metadata") or {}))
             text = metadata.pop("text", "")
             matches.append(
                 Match(item.get("id", ""), float(item.get("score", 0.0)), text, metadata)

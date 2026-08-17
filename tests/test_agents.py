@@ -12,7 +12,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from atex.agents.accessibility_validator import _sanitize  # noqa: E402
+from atex.agents.accessibility_validator import (  # noqa: E402
+    _candidate_excerpt,
+    _mentions_candidate,
+    _sanitize,
+)
 from atex.agents.schedule_planner import _enforce_verdicts  # noqa: E402
 from atex.agents.user_profile import normalize_profile  # noqa: E402
 from atex.graph import run_agent  # noqa: E402
@@ -21,6 +25,7 @@ from atex.repository import LocalRepository, travel_estimate  # noqa: E402
 from atex.state import Candidate, RunState  # noqa: E402
 from atex.tools import ToolError, build_toolset  # noqa: E402
 from atex.util import haversine_km  # noqa: E402
+from atex.vectorstore import Match, _public_metadata  # noqa: E402
 
 
 class TestProfileNormalisation(unittest.TestCase):
@@ -54,13 +59,47 @@ class TestProfileNormalisation(unittest.TestCase):
 
 class TestVerdictSanitising(unittest.TestCase):
     def test_supported_without_evidence_is_downgraded(self):
-        result = _sanitize({"verdict": "supported", "confidence": 0.9, "evidence_ids": []}, set())
+        result = _sanitize({"verdict": "supported", "evidence_ids": []}, set())
         self.assertEqual(result["verdict"], "unknown")
-        self.assertEqual(result["confidence"], 0.0)
+        self.assertNotIn("confidence", result)
+
+
+class TestValidatorEvidencePrivacy(unittest.TestCase):
+    def test_internal_metadata_is_never_exposed(self):
+        public = _public_metadata({
+            "city": "Amsterdam",
+            "location_confidence": "high",
+            "entity_confidence": "medium",
+            "confidence": 0.9,
+            "classification_version": "atex-enrichment-v1",
+        })
+        self.assertEqual(public, {"city": "Amsterdam"})
+
+    def test_semantic_fallback_requires_the_candidate_name(self):
+        candidate = Candidate(
+            "ams-nemo-science-museum",
+            "NEMO Science Museum",
+            "activity",
+            {},
+        )
+        relevant = Match("1", 0.9, "NEMO Science Museum has lift access.", {})
+        unrelated = Match("2", 0.95, "Amsterdam has many accessible museums.", {})
+        self.assertTrue(_mentions_candidate(relevant, candidate))
+        self.assertFalse(_mentions_candidate(unrelated, candidate))
+
+    def test_evidence_excerpt_keeps_the_candidate_name_visible(self):
+        candidate = Candidate(
+            "ams-nemo-science-museum",
+            "NEMO Science Museum",
+            "activity",
+            {},
+        )
+        text = "unrelated introduction " * 80 + "NEMO Science Museum has lift access."
+        self.assertIn("NEMO Science Museum", _candidate_excerpt(text, candidate))
 
     def test_fabricated_evidence_ids_are_dropped(self):
         result = _sanitize(
-            {"verdict": "supported", "evidence_ids": ["real-1", "invented-9"], "confidence": 0.8},
+            {"verdict": "supported", "evidence_ids": ["real-1", "invented-9"]},
             {"real-1"},
         )
         self.assertEqual(result["evidence_ids"], ["real-1"])
@@ -72,11 +111,11 @@ class TestVerdictSanitising(unittest.TestCase):
             "unknown",
         )
 
-    def test_confidence_is_clamped(self):
+    def test_confidence_is_discarded(self):
         result = _sanitize(
             {"verdict": "flagged", "confidence": 42, "evidence_ids": ["a"]}, {"a"}
         )
-        self.assertLessEqual(result["confidence"], 1.0)
+        self.assertNotIn("confidence", result)
 
 
 class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
@@ -143,6 +182,35 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
         self.assertEqual(
             [i["accessibility"] for i in itinerary["days"][0]["items"]], ["n/a", "n/a"]
         )
+
+    def test_generic_rows_cannot_borrow_candidate_verdicts(self):
+        state = self._state()
+        state.candidates["hotel-1"] = Candidate(
+            "hotel-1", "Named Hotel", "hotel", {}, verdict="unknown"
+        )
+        state.candidates["restaurant-1"] = Candidate(
+            "restaurant-1", "Named Restaurant", "restaurant", {}, verdict="flagged"
+        )
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": [
+                {"place_id": "p1", "name": "Lunch break", "kind": "meal"},
+                {"place_id": "hotel-1", "name": "Hotel rest", "kind": "rest"},
+                {"place_id": "restaurant-1", "name": "Named Restaurant", "kind": "meal"},
+            ]}],
+            "things_to_confirm": [
+                "Lunch break: verify access.",
+                "Hotel rest: verify access.",
+            ],
+        })
+        items = itinerary["days"][0]["items"]
+        self.assertEqual(
+            [item["accessibility"] for item in items],
+            ["n/a", "n/a", "flagged"],
+        )
+        self.assertEqual(items[0]["place_id"], "meal-break")
+        self.assertEqual(items[1]["place_id"], "rest-break")
+        self.assertNotIn("Lunch break", " ".join(itinerary["things_to_confirm"]))
+        self.assertNotIn("Hotel rest", " ".join(itinerary["things_to_confirm"]))
 
 
 class TestTools(unittest.TestCase):

@@ -140,7 +140,6 @@ Return one JSON object:
 {"verdicts": [
   {"place_id": string,
    "verdict": "supported"|"flagged"|"unknown",
-   "confidence": number between 0 and 1,
    "met_needs": [string],
    "unmet_needs": [string],
    "concerns": [string],
@@ -194,10 +193,12 @@ Rules:
 1. Respect max_activities_per_day. A relaxed pace means fewer stops and longer gaps, not a tighter schedule.
 2. Group each day geographically using the travel estimates given. Do not zig-zag across the city.
 3. Insert an explicit rest item after roughly every two activities, and a meal item near midday.
-4. Copy each item's accessibility value from the verdicts provided. Never upgrade a verdict. Never write "accessible" about an unknown or flagged place.
-5. Put every flagged or unknown place you did schedule into things_to_confirm, phrased as a concrete action the traveller should take before going.
-6. If you dropped a candidate, say why in not_scheduled.
-7. Times are local and approximate. Travel minutes are straight-line estimates, so leave slack."""
+4. For a generic meal or rest with no named candidate venue, use `meal-break` or `rest-break` as place_id and `n/a` as accessibility. Never borrow a nearby hotel, attraction, or restaurant ID for a generic break.
+5. Only a meal that names a candidate restaurant may use that restaurant's place_id and verdict.
+6. Copy each real venue's accessibility value from the verdicts provided. Never upgrade a verdict. Never write "accessible" about an unknown or flagged place.
+7. Put every flagged or unknown real venue you scheduled into things_to_confirm. Never add generic meals, rests, or transfers there.
+8. If you dropped a candidate, say why in not_scheduled.
+9. Times are local and approximate. Travel minutes are straight-line estimates, so leave slack."""
 
 
 def planner_user_prompt(
