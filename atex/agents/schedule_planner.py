@@ -13,6 +13,7 @@ from typing import Any
 from .. import SCHEDULE_PLANNER
 from ..context import AgentContext
 from ..prompts import PLANNER_SYSTEM, planner_user_prompt
+from ..repository import RepositoryError
 from ..state import RunState
 from ..tools import travel_matrix
 from ..util import truncate
@@ -169,16 +170,22 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
     candidates = _ordered_candidates(state)
     if not candidates:
         state.itinerary = {
-            "summary": "No candidate places were found in the curated catalogue for this request.",
+            "summary": "The live place search returned no candidate places for this request.",
             "days": [],
             "not_scheduled": [],
-            "warnings": ["The catalogue holds no matching places for this destination."],
+            "warnings": ["No matching places were returned; no venues were invented."],
             "things_to_confirm": [],
         }
         state.log("SchedulePlanner: nothing to schedule")
         return
 
-    places = [p for p in (ctx.repo.get_place(c.place_id) for c in candidates) if p]
+    places = []
+    try:
+        places = [p for p in (ctx.repo.get_place(c.place_id) for c in candidates) if p]
+    except RepositoryError as exc:
+        # Candidate briefs remain enough to build an itinerary. A temporary
+        # details outage should only remove the optional travel matrix.
+        state.log(f"SchedulePlanner: place details unavailable: {exc}")
     matrix = travel_matrix(places)
 
     result = ctx.llm.complete_json(

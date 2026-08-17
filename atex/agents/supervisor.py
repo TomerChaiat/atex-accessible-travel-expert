@@ -62,6 +62,16 @@ def _legalize(state: RunState, choice: str) -> tuple[str, str | None]:
     Guards invariants the prompt already states, because a prompt is a request
     and this is a guarantee.
     """
+    if (
+        state.profile is not None
+        and not state.candidates
+        and state.finder_rounds >= MAX_FINDER_ROUNDS
+    ):
+        # Live discovery genuinely found nothing (or its provider failed).
+        # Let the planner produce the explicit empty-result response instead
+        # of cycling until the supervisor turn limit.
+        return SCHEDULE_PLANNER, choice if choice != SCHEDULE_PLANNER else None
+
     if choice == SCHEDULE_PLANNER:
         if state.profile is None:
             return USER_PROFILE_AGENT, choice

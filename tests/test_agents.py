@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -18,11 +20,17 @@ from atex.agents.accessibility_validator import (  # noqa: E402
     _sanitize,
 )
 from atex.agents.activity_finder import _wants_restaurants  # noqa: E402
+from atex.agents.supervisor import _legalize  # noqa: E402
 from atex.agents.schedule_planner import _enforce_verdicts  # noqa: E402
 from atex.agents.user_profile import normalize_profile  # noqa: E402
+from atex.config import load_settings  # noqa: E402
 from atex.graph import run_agent  # noqa: E402
 from atex.httpjson import extract_json_object  # noqa: E402
-from atex.repository import LocalRepository, travel_estimate  # noqa: E402
+from atex.repository import (  # noqa: E402
+    GooglePlacesRepository,
+    LocalRepository,
+    travel_estimate,
+)
 from atex.state import Candidate, RunState  # noqa: E402
 from atex.tools import ToolError, build_toolset  # noqa: E402
 from atex.util import haversine_km  # noqa: E402
@@ -188,6 +196,79 @@ class TestCandidateIntent(unittest.TestCase):
         state = RunState("I want local food and a quiet cafe")
         state.profile = {"interests": ["history"]}
         self.assertTrue(_wants_restaurants(state))
+
+
+class TestGooglePlacesRepository(unittest.TestCase):
+    def test_google_key_selects_live_repository_backend(self):
+        with patch.dict(
+            "os.environ",
+            {"GOOGLE_MAPS_API_KEY": "configured-key"},
+            clear=True,
+        ):
+            configured = load_settings()
+
+        self.assertEqual(configured.repository_backend, "google_places")
+        self.assertEqual(configured.google_maps_api_key, "configured-key")
+
+    def test_live_search_maps_google_accessibility_fields(self):
+        payload = {
+            "places": [{
+                "id": "ChIJ-test",
+                "displayName": {"text": "Colosseum"},
+                "formattedAddress": "Piazza del Colosseo, Rome",
+                "location": {"latitude": 41.8902, "longitude": 12.4922},
+                "types": ["historical_landmark", "tourist_attraction"],
+                "businessStatus": "OPERATIONAL",
+                "accessibilityOptions": {
+                    "wheelchairAccessibleEntrance": True,
+                    "wheelchairAccessibleRestroom": False,
+                },
+                "googleMapsUri": "https://maps.google.com/?cid=test",
+            }]
+        }
+        repo = GooglePlacesRepository(
+            SimpleNamespace(google_maps_api_key="test-google-key")
+        )
+        with patch("atex.repository.post_json", return_value=payload) as request:
+            places = repo.search_places(
+                "Rome", "activity", ["history"], ["step_free_entrance"], 6
+            )
+
+        self.assertEqual(len(places), 1)
+        place = places[0]
+        self.assertEqual(place.id, "gmp:ChIJ-test")
+        self.assertEqual(place.name, "Colosseum")
+        self.assertEqual(place.city, "Rome")
+        self.assertEqual(place.accessibility_claims["step_free_entrance"], "yes")
+        self.assertEqual(place.accessibility_claims["accessible_toilet"], "no")
+        self.assertEqual(place.accessibility_claims["accessible_parking"], "unknown")
+        self.assertIs(repo.get_place(place.id), place)
+
+        _, kwargs = request.call_args
+        self.assertEqual(kwargs["headers"]["X-Goog-Api-Key"], "test-google-key")
+        self.assertIn("places.accessibilityOptions", kwargs["headers"]["X-Goog-FieldMask"])
+
+    def test_permanently_closed_places_are_excluded(self):
+        payload = {
+            "places": [{
+                "id": "closed",
+                "displayName": {"text": "Closed Museum"},
+                "businessStatus": "CLOSED_PERMANENTLY",
+            }]
+        }
+        repo = GooglePlacesRepository(SimpleNamespace(google_maps_api_key="key"))
+        with patch("atex.repository.post_json", return_value=payload):
+            self.assertEqual(repo.search_places("Rome", "activity"), [])
+
+    def test_empty_live_discovery_routes_to_planner_at_search_limit(self):
+        state = RunState(request="Four days in Rome")
+        state.profile = {"destination": "Rome", "trip_days": 4}
+        state.finder_rounds = 2
+
+        actual, corrected = _legalize(state, "ActivityLogisticsFinder")
+
+        self.assertEqual(actual, "SchedulePlanner")
+        self.assertEqual(corrected, "ActivityLogisticsFinder")
 
 
 class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):

@@ -79,29 +79,28 @@ corrected to the required module, and the correction is recorded in the trace.
 The distinction matters: the prompt *requests* an ordering, the code
 *guarantees* it. A prompt is a hope; an invariant is a property.
 
-### 2. A curated catalogue instead of live Maps and web tools
+### 2. Live place discovery, with a deterministic offline fallback
 
-The original proposal had the finder calling Maps APIs and searching the web at
-request time. We replaced that with a curated catalogue queried through
-in-process tools.
+The finder calls Google Places API (New) at request time, through a small
+provider interface. This removes the previous three-city catalogue boundary:
+destinations such as Rome can produce real attractions and hotels without a
+manual seed import. The same interface uses a bundled JSON sample when the
+Google key is absent, which keeps local tests deterministic.
 
 Reasons, in order of weight:
 
-1. **The 300s limit.** Several rounds of live HTTP inside a ReAct loop is the
-   easiest way to breach it.
-2. **Cost.** An LLM-driven supervisor is the expensive part. Making tool calls
-   effectively free — microseconds, no quota — is what pays for the reasoning.
-3. **Reproducibility.** A grader running the same prompt twice should get the
-   same itinerary.
+The live search is kept safe for Vercel by a strict field mask, short HTTP
+timeouts, one retry, result caps, and the existing four-turn ReAct limit. The
+finder stores compact result briefs in the prompt rather than full provider
+records.
 
-The tools keep JSON schemas shaped for MCP compatibility, so exposing them over
-MCP later is a transport change rather than a redesign. We chose not to run an
-MCP server in a serverless function, where the process model fits badly.
+The tools keep JSON schemas shaped for MCP compatibility, but production uses a
+normal HTTPS API because a Vercel function cannot inherit a developer's local
+MCP connections or signed-in browser session.
 
-`scripts/harvest_osm.py` keeps the data honest: OpenStreetMap publishes
-`wheelchair`, `toilets:wheelchair` and `tactile_paving` as structured tags on real
-venues, needs no API key, and — crucially — an absent tag becomes `unknown`
-rather than a guess.
+Google accessibility options are treated only as preliminary discovery hints.
+The AccessibilityValidator still decides the final label from the independent
+Pinecone evidence corpus; missing evidence stays `unknown`.
 
 ### 3. Accessibility honesty is a property of the code, not the prompt
 

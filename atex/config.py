@@ -2,9 +2,9 @@
 
 Two ideas drive this module:
 
-1. The five deployment-specific LLMod.ai and Pinecone values come from the
-   environment. Models, backend selection and operational limits are code
-   configuration. Missing credentials select the offline implementations.
+1. Deployment credentials for LLMod.ai, Pinecone, and Google Places come from
+   the environment. Models and operational limits remain code configuration.
+   Missing credentials select the available offline implementations.
 2. All cost/latency limits live in one `Budget` object rather than being
    scattered through the agents, so they can be tuned or tightened in one place
    and asserted against in tests.
@@ -77,6 +77,8 @@ class Settings:
     pinecone_index_host: str
     pinecone_namespace: str
 
+    google_maps_api_key: str
+
     supabase_url: str
     supabase_service_key: str
 
@@ -100,12 +102,13 @@ def load_settings() -> Settings:
     llmod_key = _env("LLMOD_API_KEY")
     pinecone_key = _env("PINECONE_API_KEY")
     pinecone_host = _env("PINECONE_INDEX_HOST")
+    google_maps_key = _env("GOOGLE_MAPS_API_KEY")
 
     return Settings(
         llm_backend="llmod" if llmod_key else "fake",
         embedding_backend="llmod" if llmod_key else "fake",
         vector_backend="pinecone" if pinecone_key and pinecone_host else "memory",
-        repository_backend="local",
+        repository_backend="google_places" if google_maps_key else "local",
         llmod_api_key=llmod_key,
         llmod_base_url=_env("LLMOD_BASE_URL", "https://api.llmod.ai/v1").rstrip("/"),
         text_model="MB5R2CF-azure/gpt-5.4-mini",
@@ -113,6 +116,7 @@ def load_settings() -> Settings:
         pinecone_api_key=pinecone_key,
         pinecone_index_host=pinecone_host.rstrip("/"),
         pinecone_namespace=_env("PINECONE_NAMESPACE", "atex-accessibility"),
+        google_maps_api_key=google_maps_key,
         supabase_url="",
         supabase_service_key="",
         budget=Budget(),

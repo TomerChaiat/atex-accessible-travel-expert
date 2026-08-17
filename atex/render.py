@@ -52,7 +52,7 @@ def _render_hotel(state: RunState) -> str | None:
         if profile.get("needs_hotel"):
             return (
                 "## Where you'll stay\n"
-                "- No accessible hotel could be selected from the catalogue for this destination. "
+                "- No hotel could be selected from the live place search for this destination. "
                 "Ask me again with your dates and budget, or tell me an area you prefer."
             )
         return None

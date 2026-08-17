@@ -1,4 +1,4 @@
-"""ActivityLogisticsFinder: a bounded ReAct agent over the curated catalogue.
+"""ActivityLogisticsFinder: a bounded ReAct agent over a place provider.
 
 Thought -> Action -> Observation, capped at `react_max_iters`. Two details
 matter for robustness:

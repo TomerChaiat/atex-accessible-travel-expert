@@ -31,7 +31,7 @@ implementation when its credentials are absent.
 | LLM | LLMod.ai `gpt-5.4-mini` | `FakeLLMBackend` — heuristic handler per module |
 | Embeddings | `text-embedding-3-small` | hashed bag-of-words projection |
 | Vector DB | Pinecone | in-memory cosine index over `data/kb/` |
-| Database | Supabase | JSON files in `data/seed/` |
+| Place discovery | Google Places API (New) | JSON sample in `data/seed/` |
 
 Run the tests the same way:
 
@@ -52,8 +52,8 @@ python -m unittest discover -s tests
         UserProfileAgent  ActivityLogisticsFinder  AccessibilityValidator  SchedulePlanner
                               (ReAct)                    (RAG)
                                  |                        |
-                        Curated catalogue        Accessibility KB
-                          (Supabase)                (Pinecone)
+                       Live place discovery      Accessibility KB
+                         (Google Places)             (Pinecone)
 ```
 
 The supervisor is genuinely autonomous — it chooses the path, can revisit
@@ -72,7 +72,7 @@ the trace. A test enforces this.
 |---|---|---|
 | `Supervisor` | Routing, invariants, replanning, clarification | 1 call per turn |
 | `UserProfileAgent` | Free text → structured profile | 1 call |
-| `ActivityLogisticsFinder` | ReAct over the curated catalogue | ≤ 4 calls |
+| `ActivityLogisticsFinder` | ReAct over live Google Places results | ≤ 4 calls |
 | `AccessibilityValidator` | RAG verdicts with cited evidence | 1 call per 3 places |
 | `SchedulePlanner` | Day-by-day itinerary | 1 call |
 
@@ -95,8 +95,10 @@ mechanisms back it in code:
    flagged or unknown place that was scheduled is added to *Confirm before you
    travel*.
 
-Retrieval is filtered by `place_id` rather than ranked over the whole corpus,
-so a venue's own passages can never be crowded out into a false `unknown`.
+Exact `place_id` retrieval is preferred. For places discovered live, the
+validator falls back to a constrained semantic name-and-destination query over
+Pinecone, so legacy evidence can still match a Google place without borrowing
+evidence from an unrelated venue.
 
 ---
 
@@ -148,7 +150,7 @@ prompt. The browser generates it, so the endpoint stays a plain
 
 ## Data provenance — read this before demoing
 
-`data/seed/*.json` and `data/kb/demo-corpus.json` are **placeholder data**.
+`data/seed/*.json` and `data/kb/demo-corpus.json` are **offline placeholder data**.
 
 - Attraction entries name real institutions, but their accessibility claims are
   hand-authored and **unverified**.
@@ -157,8 +159,9 @@ prompt. The browser generates it, so the endpoint stays a plain
 - Every KB passage is synthetic demo text. Nothing is quoted or derived from
   WheelchairTravel.org, TripAdvisor, or any other real source.
 
-Responses generated from this data carry a visible *Demo data notice*. Replace
-it with real data before treating any output as usable:
+Responses generated in offline mode carry a visible *Demo data notice*. In
+production, Google Places discovers real venues and Pinecone supplies the
+separate accessibility evidence.
 
 ```bash
 python scripts/harvest_osm.py Amsterdam Barcelona Berlin --limit 60
@@ -174,8 +177,8 @@ and absent tags become `unknown` rather than a guess.
 
 1. Push to GitHub, import the repo in Vercel. `vercel.json` routes everything to
    `api/index.py`, which serves both the GUI and the endpoints.
-2. Add the five values listed in `.env.example` directly in the Vercel
-   dashboard. With none set, the deployment still runs in offline mode.
+2. Add the six deployment values listed below directly in the Vercel dashboard.
+   `.env.example` is intentionally ignored by Git.
 3. Verify production matches development:
 
 ```bash
@@ -185,13 +188,28 @@ curl -s https://YOUR-APP.vercel.app/api/health
 Runtime dependencies are just `fastapi` and `pydantic` — outbound HTTP uses
 stdlib `urllib`, which keeps the serverless bundle small and cold starts short.
 
+Required Vercel environment variables:
+
+```text
+LLMOD_API_KEY
+LLMOD_BASE_URL
+PINECONE_API_KEY
+PINECONE_INDEX_HOST
+PINECONE_NAMESPACE
+GOOGLE_MAPS_API_KEY
+```
+
+Enable **Places API (New)** in the Google Cloud project. The Google integration
+discovers hotels as places; it does not return bookable room inventory or live
+rates. A Booking.com Demand API partner integration would be a separate data
+source and credential.
+
 ---
 
 ## Setting up the real services
 
 ```bash
-# 1. Supabase: run sql/schema.sql in the SQL editor, then
-python scripts/push_supabase.py
+# 1. Google Cloud: enable Places API (New) and create GOOGLE_MAPS_API_KEY
 
 # 2. Pinecone: create an index with dimension 1536, metric cosine, then
 python scripts/ingest_kb.py

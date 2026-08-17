@@ -1,9 +1,8 @@
-"""The tool catalogue available to ActivityLogisticsFinder.
+"""Place-search tools available to ActivityLogisticsFinder.
 
-Every tool is a plain Python function over the curated catalogue -- no network,
-no per-call cost, and latency measured in microseconds. That is what buys the
-budget for an LLM-driven supervisor: the reasoning is expensive, the actions
-are free.
+The functions share one interface across the live Google Places provider and
+the bundled offline fallback. Provider responses are reduced to compact briefs
+before they enter the ReAct prompt.
 
 Tool results are returned in `brief` form so observations stay small when they
 are fed back into the ReAct loop.
@@ -13,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .repository import Place, Repository, travel_estimate
+from .repository import Place, Repository, RepositoryError, travel_estimate
 
 MAX_LIMIT = 8
 
@@ -39,18 +38,30 @@ def _search(repo: Repository, kind: str, args: dict[str, Any], needs: list[str],
     categories = args.get("categories") or []
     if not isinstance(categories, list):
         categories = [str(categories)]
-    places = repo.search_places(
-        city=city,
-        kind=kind,
-        categories=[str(c) for c in categories],
-        needs=needs,
-        limit=_clean_limit(args, 6, cap),
-    )
+    try:
+        places = repo.search_places(
+            city=city,
+            kind=kind,
+            categories=[str(c) for c in categories],
+            needs=needs,
+            limit=_clean_limit(args, 6, cap),
+        )
+    except RepositoryError as exc:
+        raise ToolError(str(exc)) from exc
     if not places:
+        if getattr(repo, "name", "") == "google_places":
+            note = (
+                f"The live place provider returned no {kind} results for '{city}'. "
+                "Try a broader category once, then finish without inventing places."
+            )
+        else:
+            note = (
+                f"No {kind} entries for '{city}' in the offline sample. "
+                f"Sample cities: {', '.join(repo.list_cities()) or 'none'}."
+            )
         return {
             "results": [],
-            "note": f"No {kind} entries for '{city}' in the curated catalogue. "
-            f"Known cities: {', '.join(repo.list_cities()) or 'none'}.",
+            "note": note,
         }
     return {"results": [p.to_brief() for p in places]}
 
@@ -58,7 +69,7 @@ def _search(repo: Repository, kind: str, args: dict[str, Any], needs: list[str],
 def build_toolset(
     repo: Repository, needs: list[str], max_candidates: int
 ) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
-    """Bind the catalogue and the traveller's needs into ready-to-call tools."""
+    """Bind the place provider and traveller's needs into ready-to-call tools."""
 
     cap = max(1, min(max_candidates, MAX_LIMIT))
 
@@ -73,7 +84,10 @@ def build_toolset(
 
     def get_place_details(args: dict[str, Any]) -> dict[str, Any]:
         place_id = (args.get("place_id") or "").strip()
-        place = repo.get_place(place_id)
+        try:
+            place = repo.get_place(place_id)
+        except RepositoryError as exc:
+            raise ToolError(str(exc)) from exc
         if place is None:
             raise ToolError(f"unknown place_id '{place_id}'")
         detail = place.to_brief()
@@ -84,8 +98,11 @@ def build_toolset(
         return detail
 
     def estimate_travel(args: dict[str, Any]) -> dict[str, Any]:
-        origin = repo.get_place((args.get("from_place_id") or "").strip())
-        destination = repo.get_place((args.get("to_place_id") or "").strip())
+        try:
+            origin = repo.get_place((args.get("from_place_id") or "").strip())
+            destination = repo.get_place((args.get("to_place_id") or "").strip())
+        except RepositoryError as exc:
+            raise ToolError(str(exc)) from exc
         if origin is None or destination is None:
             raise ToolError("both from_place_id and to_place_id must be known places")
         mode = args.get("mode") or "accessible_transit"

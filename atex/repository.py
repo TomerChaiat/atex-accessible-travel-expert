@@ -1,4 +1,4 @@
-"""Curated place data: the Supabase-backed catalogue and its local mirror.
+"""Real-world place discovery plus a deterministic offline sample.
 
 `Place.to_brief()` matters more than it looks. The ReAct agent sees only the
 brief form, never the full record, which keeps the Finder's prompts small --
@@ -11,9 +11,10 @@ import json
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Protocol
+from urllib.parse import quote
 
 from .config import SEED_DIR, Settings
-from .httpjson import get_json
+from .httpjson import HttpError, get_json, post_json
 from .util import haversine_km
 
 ACCESS_KEYS = (
@@ -27,6 +28,16 @@ ACCESS_KEYS = (
     "tactile_or_braille",
     "assistance_animals",
 )
+
+GOOGLE_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+GOOGLE_PLACE_FIELDS = (
+    "id,displayName,formattedAddress,location,types,primaryType,priceLevel,"
+    "rating,accessibilityOptions,googleMapsUri,businessStatus"
+)
+
+
+class RepositoryError(RuntimeError):
+    """A live place provider could not complete a repository operation."""
 
 
 @dataclass
@@ -120,7 +131,7 @@ def _score(place: Place, categories: list[str], needs: list[str]) -> float:
 
 
 class LocalRepository:
-    """Reads the JSON mirrors in data/seed/. Used whenever Supabase is unset."""
+    """Reads data/seed for keyless local development and deterministic tests."""
 
     name = "local"
 
@@ -223,7 +234,164 @@ class SupabaseRepository:
         return ranked[: max(1, limit)]
 
 
+class GooglePlacesRepository:
+    """Global runtime place discovery backed by Google Places API (New)."""
+
+    name = "google_places"
+
+    def __init__(self, settings: Settings):
+        self._api_key = settings.google_maps_api_key
+        self._cache: dict[str, Place] = {}
+        self._headers = {
+            "X-Goog-Api-Key": self._api_key,
+            "X-Goog-FieldMask": f"places.{GOOGLE_PLACE_FIELDS.replace(',', ',places.')}",
+        }
+
+    def list_cities(self) -> list[str]:
+        # The provider is global; there is no finite city allow-list.
+        return []
+
+    @staticmethod
+    def _claim(options: dict[str, Any], key: str) -> str:
+        if key not in options:
+            return "unknown"
+        return "yes" if options.get(key) is True else "no"
+
+    @staticmethod
+    def _price_level(value: str) -> str:
+        return {
+            "PRICE_LEVEL_FREE": "free",
+            "PRICE_LEVEL_INEXPENSIVE": "low",
+            "PRICE_LEVEL_MODERATE": "mid",
+            "PRICE_LEVEL_EXPENSIVE": "high",
+            "PRICE_LEVEL_VERY_EXPENSIVE": "high",
+        }.get(value or "", "mid")
+
+    def _to_place(self, raw: dict[str, Any], city: str, kind: str) -> Place | None:
+        google_id = str(raw.get("id") or "").strip()
+        display = raw.get("displayName") or {}
+        name = str(display.get("text") if isinstance(display, dict) else display or "").strip()
+        if not google_id or not name:
+            return None
+
+        location = raw.get("location") or {}
+        options = raw.get("accessibilityOptions") or {}
+        claims = {
+            "step_free_entrance": self._claim(
+                options, "wheelchairAccessibleEntrance"
+            ),
+            "accessible_toilet": self._claim(
+                options, "wheelchairAccessibleRestroom"
+            ),
+            "accessible_parking": self._claim(
+                options, "wheelchairAccessibleParking"
+            ),
+        }
+        place = Place(
+            id=f"gmp:{google_id}",
+            city=city,
+            name=name,
+            kind=kind,
+            lat=float(location.get("latitude") or 0.0),
+            lon=float(location.get("longitude") or 0.0),
+            area=str(raw.get("formattedAddress") or ""),
+            categories=[str(value) for value in (raw.get("types") or [])][:12],
+            typical_duration_min={"hotel": 0, "restaurant": 75}.get(kind, 90),
+            price_level=self._price_level(str(raw.get("priceLevel") or "")),
+            accessibility_claims=claims,
+            accessibility_source="google-places:accessibilityOptions",
+            source_url=str(raw.get("googleMapsUri") or ""),
+            notes=(
+                f"Google Places listing. Rating: {raw.get('rating')}. "
+                "Accessibility options are preliminary and require ATEX evidence validation."
+            ),
+        )
+        self._cache[place.id] = place
+        return place
+
+    @staticmethod
+    def _text_query(city: str, kind: str, categories: list[str]) -> str:
+        if kind == "hotel":
+            subject = "hotels"
+        elif kind == "restaurant":
+            subject = "restaurants"
+        else:
+            interests = " ".join(c for c in categories if c).strip()
+            subject = f"{interests} tourist attractions" if interests else "tourist attractions"
+        return f"{subject} in {city}"
+
+    def search_places(
+        self,
+        city: str,
+        kind: str = "activity",
+        categories: list[str] | None = None,
+        needs: list[str] | None = None,
+        limit: int = 6,
+    ) -> list[Place]:
+        city = (city or "").strip()
+        if not city:
+            return []
+        page_size = max(1, min(max(limit * 2, 8), 20))
+        try:
+            payload = post_json(
+                GOOGLE_TEXT_SEARCH_URL,
+                {
+                    "textQuery": self._text_query(city, kind, categories or []),
+                    "pageSize": page_size,
+                    "languageCode": "en",
+                },
+                headers=self._headers,
+                timeout=20.0,
+                max_retries=1,
+            )
+        except (HttpError, OSError, TimeoutError) as exc:
+            raise RepositoryError(f"Google Places search failed: {exc}") from exc
+
+        places = [
+            place
+            for raw in (payload.get("places") or [])
+            if isinstance(raw, dict)
+            and raw.get("businessStatus", "OPERATIONAL") != "CLOSED_PERMANENTLY"
+            if (place := self._to_place(raw, city, kind)) is not None
+        ]
+        ranked = sorted(
+            places,
+            key=lambda place: _score(place, categories or [], needs or []),
+            reverse=True,
+        )
+        return ranked[: max(1, limit)]
+
+    def get_place(self, place_id: str) -> Place | None:
+        cached = self._cache.get(place_id)
+        if cached is not None:
+            return cached
+        if not place_id.startswith("gmp:"):
+            return None
+
+        google_id = quote(place_id[4:], safe="")
+        headers = {
+            "X-Goog-Api-Key": self._api_key,
+            "X-Goog-FieldMask": GOOGLE_PLACE_FIELDS,
+        }
+        try:
+            raw = get_json(
+                f"https://places.googleapis.com/v1/places/{google_id}",
+                headers=headers,
+                timeout=20.0,
+            )
+        except (HttpError, OSError, TimeoutError) as exc:
+            raise RepositoryError(f"Google Place details failed: {exc}") from exc
+        if not isinstance(raw, dict):
+            return None
+        # Follow-up sessions may fetch details without retaining the original
+        # search city/kind. The saved Candidate brief remains authoritative for
+        # planning; these defaults only restore coordinates and identity.
+        return self._to_place(raw, "", "activity")
+
+
 def build_repository(settings: Settings) -> Repository:
+    if settings.repository_backend == "google_places":
+        return GooglePlacesRepository(settings)
     if settings.repository_backend == "supabase":
         return SupabaseRepository(settings)
     return LocalRepository()

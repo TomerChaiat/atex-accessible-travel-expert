@@ -165,7 +165,7 @@ def main() -> Path:
     specs = [
         (USER_PROFILE_AGENT, "Extracts a structured profile: mobility, sensory needs, pace, budget.",
          GREEN, GREEN_FILL, "1 LLM call"),
-        (ACTIVITY_LOGISTICS_FINDER, "ReAct agent over the curated catalogue. Bounded to 4 iterations.",
+        (ACTIVITY_LOGISTICS_FINDER, "ReAct agent over live place search. Bounded to 4 iterations.",
          AMBER, AMBER_FILL, "ReAct loop"),
         (ACCESSIBILITY_VALIDATOR, "RAG verdicts: supported / flagged / unknown, with cited evidence.",
          PURPLE, PURPLE_FILL, "RAG, batched"),
@@ -181,9 +181,9 @@ def main() -> Path:
 
     # --- Layer 4: data and tools ------------------------------------------
     data_top = 762
-    box(draw, xs[1], data_top, width, 130, "Curated catalogue",
-        "Supabase (places, sessions). Local JSON mirror when unset.",
-        outline=AMBER, fill=GREY_FILL, tag="TOOL CATALOGUE + DATA")
+    box(draw, xs[1], data_top, width, 130, "Live place discovery",
+        "Google Places API (New). Local JSON sample when unset.",
+        outline=AMBER, fill=GREY_FILL, tag="PLACE SEARCH TOOLS")
     box(draw, xs[2], data_top, width, 130, "Accessibility knowledge base",
         "Pinecone + text-embedding-3-small. In-memory cosine when unset.",
         outline=PURPLE, fill=GREY_FILL, tag="VECTOR STORE")

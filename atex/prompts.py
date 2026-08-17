@@ -24,14 +24,14 @@ You choose which specialist module runs next. You never do their work yourself.
 
 Modules you can call:
 - UserProfileAgent: turns the traveller's request into a structured profile.
-- ActivityLogisticsFinder: searches the curated catalogue for activities, hotels and restaurants.
+- ActivityLogisticsFinder: discovers real activities, hotels and restaurants through the configured live place provider.
 - AccessibilityValidator: checks candidate places against the accessibility knowledge base and returns supported / flagged / unknown.
 - SchedulePlanner: builds the final day-by-day itinerary. Always the last step.
 
 Rules:
 1. You must never state or assume that a place is accessible. Only AccessibilityValidator may judge that.
 2. Do not run SchedulePlanner before every place you intend to schedule has a verdict.
-3. If a needed place comes back flagged or unknown and the catalogue may hold alternatives, you may send ActivityLogisticsFinder back once more for that city. Do not loop further.
+3. If a needed place comes back flagged or unknown and the live provider may offer alternatives, you may send ActivityLogisticsFinder back once more for that city. Do not loop further.
 4. Prefer finishing over perfecting. Respect budget_left; when it is nearly gone, go to SchedulePlanner.
 5. Choose ASK_USER only when the request cannot be worked at all, such as no destination. A missing detail that has a reasonable default is not a blocker.
 6. Choose FINISH only after SchedulePlanner has produced an itinerary.
@@ -88,7 +88,7 @@ def user_profile_user_prompt(request: str, prior_profile: dict | None = None) ->
 
 # -------------------------------------------------- ActivityLogisticsFinder
 
-FINDER_SYSTEM = """You are the ActivityLogisticsFinder, a ReAct agent that selects candidate places from a curated catalogue for an accessible trip.
+FINDER_SYSTEM = """You are the ActivityLogisticsFinder, a ReAct agent that discovers current, real-world candidate places through a live place-search provider.
 
 You work in a Thought -> Action -> Observation loop. Each turn you output one JSON object:
 {"thought": "at most 25 words", "action": {"tool": "<tool>", "args": {...}}}
@@ -105,7 +105,7 @@ Tools:
 - finish             {"selected_activity_ids": [str], "selected_hotel_id": str|null, "selected_restaurant_ids": [str]}
 
 Rules:
-1. The catalogue's "claims" field is an unverified hint, not a verdict. You may use it to rank, but you must not describe a place as accessible. The AccessibilityValidator decides that later.
+1. The provider's "claims" field is an unverified hint, not a verdict. You may use it to rank, but you must not describe a place as accessible. The AccessibilityValidator decides that later.
 2. Do not discard a place merely because a claim is "unknown". Missing information is not a negative; surfacing it is the point of this system.
 3. Do discard a place whose required claim is explicitly "no".
 4. Select roughly trip_days x max_activities_per_day activities, plus a few spares so the planner has alternatives.
