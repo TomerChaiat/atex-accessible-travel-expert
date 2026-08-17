@@ -1,0 +1,13 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.vercel
+.DS_Store
+data/sessions/
+
+# The course assignment PDF is the lecturer's document, not ours to republish
+# in a public repository. Keep it locally.
+Project.pdf

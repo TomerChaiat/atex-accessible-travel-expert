@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ATEX - Accessible Travel Expert</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #16191d; --muted: #5d6570;
+    --line: #dfe3e8; --accent: #1f6feb; --accent-ink: #ffffff;
+    --ok: #1a7f45; --warn: #9a6400; --unknown: #7a4ecb;
+    --code-bg: #f2f4f7; --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --ink: #e7ebf0; --muted: #9aa4b2;
+      --line: #2a313a; --accent: #4c8dff; --accent-ink: #0b0e12;
+      --ok: #4ad48a; --warn: #e0b341; --unknown: #b79bff; --code-bg: #11151a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 28px 20px 80px; }
+  header h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  header p { margin: 0 0 20px; color: var(--muted); }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 16px; margin-bottom: 18px;
+  }
+  label { display: block; font-weight: 600; margin-bottom: 8px; font-size: 14px; }
+  textarea {
+    width: 100%; min-height: 130px; resize: vertical; padding: 12px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+    color: var(--ink); font: inherit;
+  }
+  textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  button {
+    font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .examples { margin-top: 12px; }
+  .examples button {
+    font-weight: 400; font-size: 13px; padding: 6px 10px; color: var(--muted);
+    text-align: left; max-width: 100%; white-space: normal;
+  }
+  .status { color: var(--muted); font-size: 14px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  .md h1 { font-size: 20px; margin: 0 0 10px; }
+  .md h2 { font-size: 16px; margin: 20px 0 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .md ul { padding-left: 20px; margin: 8px 0; }
+  .md li { margin: 3px 0; }
+  .md blockquote {
+    margin: 12px 0; padding: 10px 14px; border-left: 3px solid var(--warn);
+    background: var(--code-bg); border-radius: 0 6px 6px 0; color: var(--muted);
+  }
+  .md hr { border: 0; border-top: 1px solid var(--line); margin: 20px 0; }
+  .tag { font-weight: 700; font-size: 12px; letter-spacing: .02em; }
+  .tag.ok { color: var(--ok); } .tag.warn { color: var(--warn); } .tag.unk { color: var(--unknown); }
+  details.step { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; background: var(--bg); }
+  details.step > summary {
+    cursor: pointer; padding: 10px 12px; font-weight: 600; font-size: 14px;
+    display: flex; gap: 10px; align-items: center;
+  }
+  .idx {
+    background: var(--accent); color: var(--accent-ink); border-radius: 999px;
+    min-width: 22px; height: 22px; display: inline-flex; align-items: center;
+    justify-content: center; font-size: 12px; flex: 0 0 auto;
+  }
+  .step-body { padding: 0 12px 12px; }
+  .step-body h4 { margin: 12px 0 4px; font-size: 12px; text-transform: uppercase;
+    letter-spacing: .05em; color: var(--muted); }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px; overflow-x: auto; font-size: 12.5px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word; margin: 0;
+  }
+  .turn { border-left: 3px solid var(--line); padding-left: 14px; margin-bottom: 22px; }
+  .turn .you { font-weight: 600; margin-bottom: 6px; }
+  .turn .you span { color: var(--muted); font-weight: 400; }
+  .meta { font-size: 13px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; }
+  .err { color: #c0392b; font-weight: 600; }
+  footer { color: var(--muted); font-size: 13px; margin-top: 30px; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>ATEX &mdash; Accessible Travel Expert</h1>
+    <p>Describe your trip and your access needs. Every place comes back marked verified, flagged, or explicitly unverified.</p>
+  </header>
+
+  <div class="panel">
+    <label for="prompt">Your request</label>
+    <textarea id="prompt" placeholder="We are a family of four visiting Amsterdam for three days. Our daughter uses a manual wheelchair. We prefer a relaxed pace, no more than two activities per day. We need a verified accessible hotel."></textarea>
+    <div class="row">
+      <button id="run" class="primary">Run Agent</button>
+      <button id="reset" title="Forget the conversation and start fresh">New conversation</button>
+      <span id="status" class="status"></span>
+    </div>
+    <div class="examples" id="examples"></div>
+  </div>
+
+  <div id="conversation"></div>
+
+  <footer>
+    API:
+    <a href="/api/team_info">/api/team_info</a> &middot;
+    <a href="/api/agent_info">/api/agent_info</a> &middot;
+    <a href="/api/model_architecture">/api/model_architecture</a> &middot;
+    <code>POST /api/execute</code>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var EXAMPLES = [
+    "We are a family of four visiting Amsterdam for three days. Our daughter uses a manual wheelchair. We prefer a relaxed pace, no more than two activities per day. We need a verified accessible hotel.",
+    "Two days in Berlin. I use a powered wheelchair and I'm sensitive to noise. I like history and quiet parks.",
+    "Barcelona for 3 days, relaxed pace, my son is autistic and we need low-crowd places. We'd like a hotel."
+  ];
+
+  var els = {
+    prompt: document.getElementById("prompt"),
+    run: document.getElementById("run"),
+    reset: document.getElementById("reset"),
+    status: document.getElementById("status"),
+    examples: document.getElementById("examples"),
+    conversation: document.getElementById("conversation")
+  };
+
+  // The session id lives in the browser, which keeps POST /api/execute a plain
+  // {"prompt": "..."} contract for anyone calling it directly.
+  function sessionId() {
+    var id = localStorage.getItem("atex_session");
+    if (!id) {
+      id = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      localStorage.setItem("atex_session", id);
+    }
+    return id;
+  }
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  // Small markdown subset matching what atex/render.py emits. Input is escaped
+  // first, so nothing from the model can inject markup.
+  function markdown(src) {
+    var lines = esc(src).split("\n");
+    var out = [], inList = false;
+
+    function closeList() { if (inList) { out.push("</ul>"); inList = false; } }
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+
+      var inline = line
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/`(.+?)`/g, "<code>$1</code>")
+        .replace(/(^|\s)_(.+?)_(?=\s|$)/g, "$1<em>$2</em>")
+        .replace(/\[verified accessible\]/g, '<span class="tag ok">[verified accessible]</span>')
+        .replace(/\[accessibility concerns\]/g, '<span class="tag warn">[accessibility concerns]</span>')
+        .replace(/\[NOT VERIFIED\]/g, '<span class="tag unk">[NOT VERIFIED]</span>');
+
+      if (/^---\s*$/.test(line)) { closeList(); out.push("<hr>"); continue; }
+      if (/^\s*$/.test(line)) { closeList(); continue; }
+
+      var h = /^(#{1,4})\s+(.*)$/.exec(inline);
+      if (h) { closeList(); var n = h[1].length; out.push("<h" + n + ">" + h[2] + "</h" + n + ">"); continue; }
+
+      if (/^&gt;\s?/.test(inline)) {
+        closeList();
+        out.push("<blockquote>" + inline.replace(/^&gt;\s?/, "") + "</blockquote>");
+        continue;
+      }
+
+      var li = /^(\s*)-\s+(.*)$/.exec(inline);
+      if (li) {
+        if (!inList) { out.push("<ul>"); inList = true; }
+        var indent = li[1].length >= 2 ? ' style="margin-left:16px;opacity:.85"' : "";
+        out.push("<li" + indent + ">" + li[2] + "</li>");
+        continue;
+      }
+
+      closeList();
+      out.push("<p>" + inline + "</p>");
+    }
+    closeList();
+    return out.join("\n");
+  }
+
+  function pretty(value) {
+    if (typeof value === "string") return value;
+    try { return JSON.stringify(value, null, 2); } catch (e) { return String(value); }
+  }
+
+  function stepEl(step, index) {
+    var d = document.createElement("details");
+    d.className = "step";
+
+    var prompt = step.prompt || {};
+    var system = prompt.system_prompt || prompt.System_prompt || "";
+    var user = prompt.user_prompt || prompt.User_prompt || "";
+
+    var s = document.createElement("summary");
+    s.innerHTML = '<span class="idx">' + (index + 1) + "</span> " + esc(step.module || "(module)");
+    d.appendChild(s);
+
+    var body = document.createElement("div");
+    body.className = "step-body";
+    body.innerHTML =
+      "<h4>System prompt</h4><pre>" + esc(system) + "</pre>" +
+      "<h4>User prompt</h4><pre>" + esc(user) + "</pre>" +
+      "<h4>Response</h4><pre>" + esc(pretty(step.response)) + "</pre>";
+    d.appendChild(body);
+    return d;
+  }
+
+  function addTurn(promptText, data) {
+    var turn = document.createElement("div");
+    turn.className = "turn";
+
+    var you = document.createElement("div");
+    you.className = "you";
+    you.innerHTML = "You <span>asked</span>";
+    turn.appendChild(you);
+
+    var q = document.createElement("div");
+    q.className = "status";
+    q.textContent = promptText;
+    turn.appendChild(q);
+
+    var answer = document.createElement("div");
+    answer.className = "panel";
+
+    if (data.status === "error") {
+      answer.innerHTML = '<div class="err">Error: ' + esc(data.error) + "</div>";
+    } else {
+      var md = document.createElement("div");
+      md.className = "md";
+      md.innerHTML = markdown(data.response || "");
+      answer.appendChild(md);
+    }
+
+    var steps = data.steps || [];
+    if (steps.length) {
+      var wrap = document.createElement("div");
+      wrap.style.marginTop = "18px";
+
+      var counts = {};
+      steps.forEach(function (st) { counts[st.module] = (counts[st.module] || 0) + 1; });
+      var summaryText = Object.keys(counts).map(function (k) {
+        return k + " x" + counts[k];
+      }).join(", ");
+
+      var h = document.createElement("h2");
+      h.textContent = "Execution trace (" + steps.length + " LLM calls)";
+      wrap.appendChild(h);
+
+      var meta = document.createElement("div");
+      meta.className = "meta";
+      meta.style.marginBottom = "10px";
+      var bits = [summaryText];
+      if (data._diagnostics && data._diagnostics.usage) {
+        var u = data._diagnostics.usage;
+        bits.push(u.total_tokens + " tokens");
+        bits.push(u.elapsed_seconds + "s");
+        if (u.stop_reason) bits.push("stopped: " + u.stop_reason);
+        if (u.backends) bits.push("llm: " + u.backends.llm);
+      }
+      meta.textContent = bits.join("  ·  ");
+      wrap.appendChild(meta);
+
+      steps.forEach(function (st, i) { wrap.appendChild(stepEl(st, i)); });
+
+      if (data._diagnostics && (data._diagnostics.notes || []).length) {
+        var n = document.createElement("div");
+        n.innerHTML = "<h4>Guardrail events</h4><pre>" +
+          esc(data._diagnostics.notes.join("\n")) + "</pre>";
+        wrap.appendChild(n);
+      }
+      answer.appendChild(wrap);
+    }
+
+    turn.appendChild(answer);
+    els.conversation.insertBefore(turn, els.conversation.firstChild);
+  }
+
+  async function run() {
+    var text = els.prompt.value.trim();
+    if (!text) { els.prompt.focus(); return; }
+
+    els.run.disabled = true;
+    els.status.textContent = "Running the agent…";
+    var started = Date.now();
+
+    try {
+      var res = await fetch("/api/execute?debug=1", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: text, session_id: sessionId() })
+      });
+      var data = await res.json();
+      addTurn(text, data);
+      els.status.textContent = "Done in " + ((Date.now() - started) / 1000).toFixed(1) + "s";
+      els.prompt.value = "";
+    } catch (err) {
+      addTurn(text, { status: "error", error: String(err), steps: [] });
+      els.status.textContent = "Request failed";
+    } finally {
+      els.run.disabled = false;
+    }
+  }
+
+  EXAMPLES.forEach(function (text) {
+    var b = document.createElement("button");
+    b.textContent = text.length > 96 ? text.slice(0, 93) + "…" : text;
+    b.title = text;
+    b.onclick = function () { els.prompt.value = text; els.prompt.focus(); };
+    els.examples.appendChild(b);
+  });
+
+  els.run.onclick = run;
+  els.reset.onclick = function () {
+    localStorage.removeItem("atex_session");
+    els.conversation.innerHTML = "";
+    els.status.textContent = "Started a new conversation";
+  };
+  els.prompt.addEventListener("keydown", function (e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run();
+  });
+})();
+</script>
+</body>
+</html>
