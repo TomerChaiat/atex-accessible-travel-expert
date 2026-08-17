@@ -22,7 +22,7 @@ from atex.agents.accessibility_validator import (  # noqa: E402
 )
 from atex.agents.activity_finder import _wants_restaurants  # noqa: E402
 from atex.agents.supervisor import _legalize, decide  # noqa: E402
-from atex.agents.schedule_planner import _enforce_verdicts  # noqa: E402
+from atex.agents.schedule_planner import _enforce_verdicts, _flagged_reason  # noqa: E402
 from atex.agents.user_profile import normalize_profile  # noqa: E402
 from atex.config import load_settings  # noqa: E402
 from atex.graph import run_agent  # noqa: E402
@@ -65,6 +65,10 @@ class TestProfileNormalisation(unittest.TestCase):
         profile = normalize_profile({"trip_days": "banana", "interests": None})
         self.assertIsInstance(profile["trip_days"], int)
         self.assertEqual(profile["interests"], [])
+
+    def test_group_size_is_preserved_for_conditional_access(self):
+        profile = normalize_profile({"party_size": 4})
+        self.assertEqual(profile["party_size"], 4)
 
 
 class TestVerdictSanitising(unittest.TestCase):
@@ -183,6 +187,46 @@ class TestValidatorEvidencePrivacy(unittest.TestCase):
             },
             {"e1"},
             ["step_free_entrance", "accessible_toilet"],
+        )
+        self.assertEqual(result["verdict"], "flagged")
+
+    def test_helper_requirement_depends_on_traveller_profile(self):
+        verdict = {
+            "verdict": "flagged",
+            "met_needs": ["step_free_entrance", "accessible_toilet"],
+            "summary": "Access is supported when visiting with a helper.",
+            "evidence_ids": ["e1"],
+        }
+        solo = _sanitize(
+            verdict,
+            {"e1"},
+            ["step_free_entrance", "accessible_toilet"],
+            {"companion_available": False, "travelling_solo": True},
+        )
+        group = _sanitize(
+            verdict,
+            {"e1"},
+            ["step_free_entrance", "accessible_toilet"],
+            {"companion_available": True, "party_size": 4},
+        )
+        self.assertEqual(solo["verdict"], "flagged")
+        self.assertEqual(group["verdict"], "supported")
+        self.assertIn("companion", " ".join(group["conditions"]).lower())
+
+    def test_companion_does_not_erase_an_unconfirmed_toilet(self):
+        result = _sanitize(
+            {
+                "verdict": "flagged",
+                "met_needs": ["step_free_entrance"],
+                "unmet_needs": ["accessible_toilet"],
+                "summary": (
+                    "Access requires a companion, and an accessible toilet is not confirmed."
+                ),
+                "evidence_ids": ["e1"],
+            },
+            {"e1"},
+            ["step_free_entrance", "accessible_toilet"],
+            {"companion_available": True, "party_size": 4},
         )
         self.assertEqual(result["verdict"], "flagged")
 
@@ -373,6 +417,49 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
             "restaurant-1",
             {entry["place_id"] for entry in itinerary["not_scheduled"]},
         )
+
+    def test_supported_condition_is_visible_in_the_itinerary_note(self):
+        state = self._state()
+        state.candidates["conditional"] = Candidate(
+            "conditional",
+            "Companion Venue",
+            "activity",
+            {},
+            verdict="supported",
+            verdict_detail={"conditions": ["Visit with a companion or helper."]},
+        )
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": [{
+                "place_id": "conditional",
+                "name": "Companion Venue",
+                "kind": "activity",
+                "note": "Original planner note.",
+            }]}],
+        })
+        note = itinerary["days"][0]["items"][0]["note"]
+        self.assertIn("companion", note.lower())
+
+    def test_rejected_reason_keeps_complete_long_explanation(self):
+        candidate = Candidate(
+            "long",
+            "Domus Aurea",
+            "activity",
+            {},
+            verdict="flagged",
+            verdict_detail={
+                "summary": (
+                    "General wheelchair access is described, but the accessible toilet "
+                    "is not directly confirmed."
+                ),
+                "concerns": [
+                    "The source recommends companion assistance throughout the underground route."
+                ],
+                "conditions": ["Bring the companion throughout the visit."],
+            },
+        )
+        reason = _flagged_reason(candidate)
+        self.assertIn("Bring the companion throughout the visit.", reason)
+        self.assertFalse(reason.endswith("…"))
 
 
 class TestTools(unittest.TestCase):

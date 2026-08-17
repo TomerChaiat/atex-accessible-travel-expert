@@ -39,6 +39,7 @@ class Candidate:
             "accessibility": self.verdict or "unknown",
             "accessibility_summary": truncate(detail.get("summary", ""), 160),
             "concerns": detail.get("concerns", [])[:3],
+            "conditions": detail.get("conditions", [])[:3],
         }
 
 

@@ -54,6 +54,7 @@ CONDITIONAL_EVIDENCE = (
     "raised lip", "out of service", "irregular", "cannot be relied",
     "contact the specific", "registration in advance", "tight", "indirect",
     "hard work", "sometimes closed", "disorienting",
+    "with a helper", "visit with a helper", "with a companion",
 )
 POSITIVE_EVIDENCE = (
     "step free", "step-free", "level", "lift", "accessible toilet",
@@ -147,6 +148,12 @@ class FakeLLMBackend:
 
         days = _int_in(lowered, r"(\d+|one|two|three|four|five|six|seven)[\s-]*day")
         party = _int_in(lowered, r"(?:family|group|party)\s+of\s+(\d+|one|two|three|four|five|six)")
+        if party is None and re.search(r"\b(?:with (?:a |my )?(?:group|family)|family trip)\b", lowered):
+            party = 2
+        if party is None and re.search(r"\b(?:wife|husband|partner|friend|companion)\b", lowered):
+            party = 2
+        if re.search(r"\b(?:alone|solo|by myself|on my own)\b", lowered):
+            party = 1
         per_day = _int_in(
             lowered, r"(?:no more than|at most|max(?:imum)?(?: of)?)\s+(\d+|one|two|three|four)"
         )
@@ -161,6 +168,11 @@ class FakeLLMBackend:
 
         autism = any(w in lowered for w in ("autism", "autistic", "sensory"))
         low_noise = autism or any(w in lowered for w in ("quiet", "noise", "loud"))
+        assistant_present = None
+        if re.search(r"\b(?:caregiver|carer|personal assistant)\b", lowered):
+            assistant_present = True
+        elif re.search(r"\b(?:alone|solo|by myself|on my own)\b", lowered):
+            assistant_present = False
 
         pace = None
         if any(w in lowered for w in ("relaxed", "slow", "calm", "easy pace")):
@@ -201,7 +213,7 @@ class FakeLLMBackend:
             "mobility": {
                 "wheelchair": wheelchair,
                 "step_free_required": wheelchair != "none",
-                "assistant_present": None,
+                "assistant_present": assistant_present,
             },
             "sensory": {
                 "low_noise": low_noise,
@@ -272,10 +284,20 @@ class FakeLLMBackend:
     def _validator(self, user_prompt: str) -> dict[str, Any]:
         payload = _safe_json(user_prompt)
         needs = payload.get("required_needs") or []
+        traveler_context = payload.get("traveler_context") or {}
         places = payload.get("places") or []
-        return {"verdicts": [self._one_verdict(item, needs) for item in places]}
+        return {
+            "verdicts": [
+                self._one_verdict(item, needs, traveler_context) for item in places
+            ]
+        }
 
-    def _one_verdict(self, item: dict[str, Any], needs: list[str]) -> dict[str, Any]:
+    def _one_verdict(
+        self,
+        item: dict[str, Any],
+        needs: list[str],
+        traveler_context: dict[str, Any],
+    ) -> dict[str, Any]:
         place = item.get("place") or {}
         place_id = place.get("id") or ""
         evidence = item.get("evidence") or []
@@ -289,19 +311,37 @@ class FakeLLMBackend:
         negatives = [p for p in NEGATIVE_EVIDENCE if p in blob]
         conditionals = [p for p in CONDITIONAL_EVIDENCE if p in blob]
         positives = [p for p in POSITIVE_EVIDENCE if p in blob]
+        helper_condition = any("helper" in value or "companion" in value for value in conditionals)
+        other_conditionals = [
+            value for value in conditionals if "helper" not in value and "companion" not in value
+        ]
+        companion_available = bool(traveler_context.get("companion_available"))
+        conditions = []
 
         if negatives:
             verdict = "flagged"
             concerns = [f"Evidence mentions: {p}" for p in negatives[:3]]
             summary = "The evidence describes barriers that conflict with the stated needs."
-        elif conditionals:
+        elif conditionals and not (
+            helper_condition and companion_available and positives and not other_conditionals
+        ):
             verdict = "flagged"
             concerns = [f"Conditional: {p}" for p in conditionals[:3]]
-            summary = "Access appears conditional, seasonal, or dependent on arranging ahead."
+            summary = (
+                "The evidence requires a helper, but the traveller is going alone."
+                if helper_condition and not companion_available
+                else "Access is conditional or requires advance arrangements."
+            )
+            if helper_condition:
+                conditions = ["Visit with a companion or helper."]
         elif positives:
             verdict = "supported"
             concerns = []
-            summary = "The evidence directly describes step-free access and accessible facilities."
+            if helper_condition:
+                conditions = ["Visit with a companion or helper."]
+                summary = "The evidence supports access when visiting with a companion."
+            else:
+                summary = "The evidence confirms step-free access and accessible facilities."
         else:
             return _unknown_verdict(
                 place_id, "Retrieved passages do not address the required needs."
@@ -313,6 +353,7 @@ class FakeLLMBackend:
             "met_needs": needs if verdict == "supported" else [],
             "unmet_needs": needs[:1] if (verdict == "flagged" and negatives) else [],
             "concerns": concerns,
+            "conditions": conditions,
             "evidence_ids": ids,
             "summary": summary,
         }
@@ -428,6 +469,7 @@ def _unknown_verdict(place_id: str, summary: str) -> dict[str, Any]:
         "met_needs": [],
         "unmet_needs": [],
         "concerns": [],
+        "conditions": [],
         "evidence_ids": [],
         "summary": summary,
     }

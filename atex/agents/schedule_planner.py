@@ -83,12 +83,15 @@ def _flagged_reason(candidate: Any) -> str:
     concerns = [str(value).strip() for value in (detail.get("concerns") or []) if value]
     if concerns:
         parts.append("Concerns: " + "; ".join(concerns[:2]))
+    conditions = [str(value).strip() for value in (detail.get("conditions") or []) if value]
+    if conditions:
+        parts.append("Conditions: " + "; ".join(conditions[:2]))
     unmet = [str(value).replace("_", " ") for value in (detail.get("unmet_needs") or [])]
     if unmet:
         parts.append("Unmet needs: " + ", ".join(unmet[:3]))
     return truncate(
         " ".join(parts) or "The accessibility evidence conflicts with the traveller's needs.",
-        320,
+        700,
     )
 
 
@@ -123,6 +126,13 @@ def _enforce_verdicts(state: RunState, itinerary: dict[str, Any]) -> dict[str, A
                     # a venue with known concerns cannot reach the itinerary.
                     continue
                 item["accessibility"] = verdict
+                conditions = candidate.verdict_detail.get("conditions") or []
+                if conditions:
+                    # A supported place can still depend on a condition that
+                    # the current profile satisfies, such as having a companion.
+                    item["note"] = "Access condition: " + " ".join(
+                        str(condition) for condition in conditions[:2]
+                    )
                 if verdict == "unknown":
                     scheduled_non_ok.append(
                         (candidate.place_id, str(item.get("name") or place_id), verdict)

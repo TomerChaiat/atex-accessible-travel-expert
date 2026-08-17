@@ -68,6 +68,8 @@ def _render_hotel(state: RunState) -> str | None:
     ]
     if detail.get("summary"):
         lines.append(f"  - {detail['summary']}")
+    for condition in (detail.get("conditions") or [])[:2]:
+        lines.append(f"  - Condition: {condition}")
     for concern in (detail.get("concerns") or [])[:2]:
         lines.append(f"  - Note: {concern}")
     if hotel.verdict != "supported":

@@ -70,7 +70,8 @@ Return one JSON object with exactly these keys:
  "notes": string
 }
 
-Use null when the request does not say, and never invent a destination. If a manual or powered wheelchair is mentioned, set step_free_required true and include step_free_entrance and accessible_toilet in accessibility_needs."""
+Use null when the request does not say, and never invent a destination. If a manual or powered wheelchair is mentioned, set step_free_required true and include step_free_entrance and accessible_toilet in accessibility_needs.
+Set party_size to 1 when the traveller explicitly says they are alone. Count named companions or group size when present. If they say family or group without a number, use 2 to represent at least one companion. Set assistant_present true only for an explicit caregiver, personal assistant, or companion who will provide assistance; an ordinary group is represented by party_size."""
 
 
 def user_profile_user_prompt(request: str, prior_profile: dict | None = None) -> str:
@@ -144,8 +145,9 @@ Return one JSON object:
    "met_needs": [string],
    "unmet_needs": [string],
    "concerns": [string],
+   "conditions": [string],
    "evidence_ids": [string],
-   "summary": "at most 40 words stating the concrete evidence, barrier, condition, or missing required feature"}
+   "summary": "one complete sentence of at most 24 words stating the concrete evidence, barrier, condition, or missing required feature"}
 ]}
 
 Include exactly one entry per place you were given, using its exact place_id.
@@ -155,7 +157,12 @@ Verdict rules, applied strictly:
 - "flagged": cited evidence confirms only part of the required access, leaves a core mobility feature unresolved, or describes a barrier, condition, seasonal limitation, steps, narrow access, or advance arrangement.
 - "unknown": there is no usable candidate-specific accessibility fact. A passage that merely names the venue is unknown. Do not use unknown when cited evidence directly confirms at least one requested feature; use flagged for partial evidence.
 
-For every flagged verdict, the summary must explain why in traveller-facing language. Name the barrier, conditional arrangement, unmet need, or core feature the evidence does not confirm. Never return a vague summary such as "accessibility concerns exist".
+Use traveller_context when evidence requires a helper or companion:
+- If companion_available is true, that requirement is satisfied. The venue may be supported when all other required core features are confirmed. Put the requirement in conditions and say "Accessible with a companion" in the summary.
+- If travelling_solo is true or companion availability is unknown, a helper requirement is flagged. State that solo access is not supported by the evidence.
+- A satisfied companion condition does not erase a separate barrier or unconfirmed required feature.
+
+For every flagged verdict, explain why in short traveller-facing sentences. Name the barrier, arrangement, unmet need, or unconfirmed core feature. Each concern and condition must be one complete sentence of at most 12 words. Never return vague text such as "accessibility concerns exist".
 
 You must never infer accessibility from a place's category, popularity or reputation. A modern museum is not accessible because modern museums usually are. If the passages do not say it, the answer is "unknown".
 Cite in evidence_ids only passages you actually relied on. If evidence_ids is empty, verdict must be "unknown"."""
@@ -164,10 +171,15 @@ Cite in evidence_ids only passages you actually relied on. If evidence_ids is em
 def validator_user_prompt(
     items: list[dict[str, Any]],
     required_needs: list[str],
+    traveler_context: dict[str, Any] | None = None,
 ) -> str:
     """`items` is a list of {"place": brief, "evidence": [passages]}."""
     return json.dumps(
-        {"required_needs": required_needs, "places": items},
+        {
+            "required_needs": required_needs,
+            "traveler_context": traveler_context or {},
+            "places": items,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -198,11 +210,12 @@ Rules:
 3. Insert an explicit rest item after roughly every two activities, and a meal item near midday.
 4. For a generic meal or rest with no named candidate venue, use `meal-break` or `rest-break` as place_id and `n/a` as accessibility. Never borrow a nearby hotel, attraction, or restaurant ID for a generic break.
 5. Only a meal that names a candidate restaurant may use that restaurant's place_id and verdict.
-6. Never schedule a candidate whose accessibility value is flagged. Put it in not_scheduled and copy its concrete accessibility_summary/concerns into the reason.
+6. Never schedule a candidate whose accessibility value is flagged. Put it in not_scheduled and copy its concrete accessibility_summary, concerns, and conditions into the reason.
 7. Copy each scheduled real venue's accessibility value from the verdicts provided. Never upgrade a verdict or write "accessible" about an unknown place.
-8. Put every unknown real venue you scheduled into things_to_confirm. Never add generic meals, rests, transfers, or unscheduled flagged venues there.
-9. If you dropped another candidate, say why in not_scheduled.
-10. Times are local and approximate. Travel minutes are straight-line estimates, so leave slack."""
+8. When a supported candidate has conditions, state them briefly in that itinerary item's note. Never hide a companion, booking, or assistance requirement.
+9. Put every unknown real venue you scheduled into things_to_confirm. Never add generic meals, rests, transfers, or unscheduled flagged venues there.
+10. If you dropped another candidate, say why in not_scheduled.
+11. Times are local and approximate. Travel minutes are straight-line estimates, so leave slack."""
 
 
 def planner_user_prompt(

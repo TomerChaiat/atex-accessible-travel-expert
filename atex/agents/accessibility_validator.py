@@ -167,6 +167,7 @@ def _unknown(reason: str) -> dict[str, Any]:
         "met_needs": [],
         "unmet_needs": [],
         "concerns": [],
+        "conditions": [],
         "evidence_ids": [],
         "summary": reason,
     }
@@ -176,6 +177,7 @@ def _sanitize(
     result: dict[str, Any],
     evidence_ids: set[str],
     required_needs: list[str] | None = None,
+    traveler_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Hold the model to the rules rather than trusting it to follow them.
 
@@ -190,7 +192,8 @@ def _sanitize(
     cited = [i for i in (result.get("evidence_ids") or []) if i in evidence_ids]
     met_needs = [str(n) for n in (result.get("met_needs") or [])][:8]
     unmet_needs = [str(n) for n in (result.get("unmet_needs") or [])][:8]
-    concerns = [str(c) for c in (result.get("concerns") or [])][:5]
+    concerns = [truncate(str(c), 180) for c in (result.get("concerns") or [])][:5]
+    conditions = [truncate(str(c), 180) for c in (result.get("conditions") or [])][:4]
     summary = truncate(str(result.get("summary") or ""), 300)
 
     if verdict == "supported" and not cited:
@@ -203,7 +206,7 @@ def _sanitize(
         "accessible_toilet",
         "lift_access",
     }
-    barrier_text = " ".join([summary, *concerns]).casefold()
+    barrier_text = " ".join([summary, *concerns, *conditions]).casefold()
     barrier_markers = (
         "not accessible",
         "few steps",
@@ -213,15 +216,51 @@ def _sanitize(
         "advance arrangement",
         "advance registration",
     )
+    helper_markers = (
+        "with a helper",
+        "visit with a helper",
+        "visiting with a helper",
+        "with a companion",
+        "companion required",
+        "requires a companion",
+        "requires assistance",
+    )
+    helper_required = any(marker in barrier_text for marker in helper_markers)
+    companion_available = bool((traveler_context or {}).get("companion_available"))
+    unresolved_markers = (
+        "not confirmed",
+        "unconfirmed",
+        "not directly confirmed",
+        "not addressed",
+        "not available",
+        "no accessible toilet",
+    )
+    has_other_problem = bool(unmet_needs) or any(
+        marker in barrier_text for marker in (*barrier_markers, *unresolved_markers)
+    )
+
+    if helper_required and not conditions:
+        conditions.append("Visit with a companion or helper.")
 
     # Partial, cited evidence is useful but not a full verification. Present it
     # as a concern rather than erasing it into the same bucket as no evidence.
     if verdict == "unknown" and cited and met:
         verdict = "flagged"
+    if (
+        verdict == "flagged"
+        and helper_required
+        and companion_available
+        and not has_other_problem
+        and (not core_required or core_required.issubset(met))
+    ):
+        # The only condition is already satisfied by this traveller's profile.
+        # Keep it visible, but do not reject an otherwise supported venue.
+        verdict = "supported"
     if verdict == "supported" and (
         unmet_needs
         or (core_required and not core_required.issubset(met))
         or any(marker in barrier_text for marker in barrier_markers)
+        or (helper_required and not companion_available)
     ):
         verdict = "flagged"
 
@@ -230,6 +269,7 @@ def _sanitize(
         "met_needs": met_needs,
         "unmet_needs": unmet_needs,
         "concerns": concerns,
+        "conditions": conditions,
         "evidence_ids": cited,
         "summary": summary,
     }
@@ -251,6 +291,16 @@ def validate_batch(
     """
     needs = state.required_needs or DEFAULT_NEEDS
     city = state.destination or (state.profile or {}).get("destination") or ""
+    profile = state.profile or {}
+    mobility = profile.get("mobility") or {}
+    party_size = int(profile.get("party_size") or 1)
+    assistant_present = mobility.get("assistant_present")
+    traveler_context = {
+        "party_size": party_size,
+        "assistant_present": assistant_present,
+        "companion_available": assistant_present is True or party_size > 1,
+        "travelling_solo": party_size == 1 and assistant_present is not True,
+    }
 
     items: list[dict[str, Any]] = []
     with_evidence: list[Candidate] = []
@@ -281,7 +331,7 @@ def validate_batch(
     result = ctx.llm.complete_json(
         ACCESSIBILITY_VALIDATOR,
         VALIDATOR_SYSTEM,
-        validator_user_prompt(items, needs),
+        validator_user_prompt(items, needs, traveler_context),
         max_tokens=400 + 320 * len(with_evidence),
     )
 
@@ -301,7 +351,12 @@ def validate_batch(
             continue
         _assign(
             candidate,
-            _sanitize(entry, evidence_ids_by_place[candidate.place_id], needs),
+            _sanitize(
+                entry,
+                evidence_ids_by_place[candidate.place_id],
+                needs,
+                traveler_context,
+            ),
         )
 
 
