@@ -147,7 +147,11 @@ def _unknown(reason: str) -> dict[str, Any]:
     }
 
 
-def _sanitize(result: dict[str, Any], evidence_ids: set[str]) -> dict[str, Any]:
+def _sanitize(
+    result: dict[str, Any],
+    evidence_ids: set[str],
+    required_needs: list[str] | None = None,
+) -> dict[str, Any]:
     """Hold the model to the rules rather than trusting it to follow them.
 
     A verdict with no cited evidence is downgraded to `unknown`, and cited ids
@@ -159,16 +163,50 @@ def _sanitize(result: dict[str, Any], evidence_ids: set[str]) -> dict[str, Any]:
         verdict = "unknown"
 
     cited = [i for i in (result.get("evidence_ids") or []) if i in evidence_ids]
+    met_needs = [str(n) for n in (result.get("met_needs") or [])][:8]
+    unmet_needs = [str(n) for n in (result.get("unmet_needs") or [])][:8]
+    concerns = [str(c) for c in (result.get("concerns") or [])][:5]
+    summary = truncate(str(result.get("summary") or ""), 300)
+
     if verdict == "supported" and not cited:
         verdict = "unknown"
 
+    required = set(required_needs or [])
+    met = set(met_needs)
+    core_required = required & {
+        "step_free_entrance",
+        "accessible_toilet",
+        "lift_access",
+    }
+    barrier_text = " ".join([summary, *concerns]).casefold()
+    barrier_markers = (
+        "not accessible",
+        "few steps",
+        "stairs",
+        "narrow entrance",
+        "narrow doorway",
+        "advance arrangement",
+        "advance registration",
+    )
+
+    # Partial, cited evidence is useful but not a full verification. Present it
+    # as a concern rather than erasing it into the same bucket as no evidence.
+    if verdict == "unknown" and cited and met:
+        verdict = "flagged"
+    if verdict == "supported" and (
+        unmet_needs
+        or (core_required and not core_required.issubset(met))
+        or any(marker in barrier_text for marker in barrier_markers)
+    ):
+        verdict = "flagged"
+
     return {
         "verdict": verdict,
-        "met_needs": [str(n) for n in (result.get("met_needs") or [])][:8],
-        "unmet_needs": [str(n) for n in (result.get("unmet_needs") or [])][:8],
-        "concerns": [str(c) for c in (result.get("concerns") or [])][:5],
+        "met_needs": met_needs,
+        "unmet_needs": unmet_needs,
+        "concerns": concerns,
         "evidence_ids": cited,
-        "summary": truncate(str(result.get("summary") or ""), 300),
+        "summary": summary,
     }
 
 
@@ -235,7 +273,10 @@ def validate_batch(
                 f"AccessibilityValidator: no verdict returned for {candidate.place_id}"
             )
             continue
-        _assign(candidate, _sanitize(entry, evidence_ids_by_place[candidate.place_id]))
+        _assign(
+            candidate,
+            _sanitize(entry, evidence_ids_by_place[candidate.place_id], needs),
+        )
 
 
 def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:

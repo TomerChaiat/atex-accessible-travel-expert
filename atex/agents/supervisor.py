@@ -106,6 +106,22 @@ def _legalize(state: RunState, choice: str) -> tuple[str, str | None]:
 
 
 def decide(ctx: AgentContext, state: RunState) -> Decision:
+    # Once every selected candidate has a verdict, the only legal productive
+    # next step is planning. Skip a redundant model call that can only be
+    # corrected back to SchedulePlanner.
+    if (
+        state.itinerary is None
+        and state.profile is not None
+        and state.candidates
+        and not state.unvalidated()
+    ):
+        state.log("Supervisor: -> SchedulePlanner (validation complete)")
+        return Decision(
+            next_module=SCHEDULE_PLANNER,
+            instruction="Build the itinerary from the validated candidates.",
+            reasoning="Validation is complete.",
+        )
+
     raw: dict[str, Any] = ctx.llm.complete_json(
         SUPERVISOR,
         SUPERVISOR_SYSTEM,

@@ -109,7 +109,8 @@ Rules:
 2. Do not discard a place merely because a claim is "unknown". Missing information is not a negative; surfacing it is the point of this system.
 3. Do discard a place whose required claim is explicitly "no".
 4. Select roughly trip_days x max_activities_per_day activities, plus a few spares so the planner has alternatives.
-5. Call finish as soon as you have enough. You have very few turns."""
+5. Select restaurants only when the request or profile interests explicitly ask for food, dining, a cafe, or a restaurant. The planner can create an unlabeled generic meal break otherwise.
+6. Call finish as soon as you have enough. You have very few turns."""
 
 
 def finder_user_prompt(
@@ -150,9 +151,9 @@ Return one JSON object:
 Include exactly one entry per place you were given, using its exact place_id.
 
 Verdict rules, applied strictly:
-- "supported": the evidence directly addresses the traveller's required needs and indicates they are met.
-- "flagged": the evidence indicates a required need is not met, is conditional, seasonal, or depends on advance arrangement.
-- "unknown": the evidence does not address the required needs, or there is no evidence. This is the correct answer far more often than people expect.
+- "supported": cited evidence directly confirms every required core mobility feature (step-free entrance, accessible toilet, and lift when requested), with no stated barrier. An unaddressed sensory preference such as quiet space belongs in concerns but does not erase verified core mobility access.
+- "flagged": cited evidence confirms only part of the required access, leaves a core mobility feature unresolved, or describes a barrier, condition, seasonal limitation, steps, narrow access, or advance arrangement.
+- "unknown": there is no usable candidate-specific accessibility fact. A passage that merely names the venue is unknown. Do not use unknown when cited evidence directly confirms at least one requested feature; use flagged for partial evidence.
 
 You must never infer accessibility from a place's category, popularity or reputation. A modern museum is not accessible because modern museums usually are. If the passages do not say it, the answer is "unknown".
 Cite in evidence_ids only passages you actually relied on. If evidence_ids is empty, verdict must be "unknown"."""

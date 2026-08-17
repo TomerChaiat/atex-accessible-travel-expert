@@ -17,6 +17,7 @@ from atex.agents.accessibility_validator import (  # noqa: E402
     _mentions_candidate,
     _sanitize,
 )
+from atex.agents.activity_finder import _wants_restaurants  # noqa: E402
 from atex.agents.schedule_planner import _enforce_verdicts  # noqa: E402
 from atex.agents.user_profile import normalize_profile  # noqa: E402
 from atex.graph import run_agent  # noqa: E402
@@ -116,6 +117,77 @@ class TestValidatorEvidencePrivacy(unittest.TestCase):
             {"verdict": "flagged", "confidence": 42, "evidence_ids": ["a"]}, {"a"}
         )
         self.assertNotIn("confidence", result)
+
+    def test_partial_cited_evidence_becomes_a_concern(self):
+        result = _sanitize(
+            {
+                "verdict": "unknown",
+                "met_needs": ["quiet_space"],
+                "evidence_ids": ["e1"],
+            },
+            {"e1"},
+            ["step_free_entrance", "accessible_toilet", "quiet_space"],
+        )
+        self.assertEqual(result["verdict"], "flagged")
+
+    def test_supported_requires_all_core_mobility_needs(self):
+        result = _sanitize(
+            {
+                "verdict": "supported",
+                "met_needs": ["step_free_entrance"],
+                "evidence_ids": ["e1"],
+            },
+            {"e1"},
+            ["step_free_entrance", "accessible_toilet"],
+        )
+        self.assertEqual(result["verdict"], "flagged")
+
+    def test_missing_sensory_preference_does_not_erase_core_verification(self):
+        result = _sanitize(
+            {
+                "verdict": "supported",
+                "met_needs": [
+                    "step_free_entrance",
+                    "accessible_toilet",
+                    "lift_access",
+                ],
+                "concerns": ["Quiet space is not addressed."],
+                "evidence_ids": ["e1"],
+            },
+            {"e1"},
+            [
+                "step_free_entrance",
+                "accessible_toilet",
+                "lift_access",
+                "quiet_space",
+            ],
+        )
+        self.assertEqual(result["verdict"], "supported")
+
+    def test_reported_barrier_downgrades_supported_to_concerns(self):
+        result = _sanitize(
+            {
+                "verdict": "supported",
+                "met_needs": ["step_free_entrance", "accessible_toilet"],
+                "summary": "A small section is not accessible because of a few steps.",
+                "evidence_ids": ["e1"],
+            },
+            {"e1"},
+            ["step_free_entrance", "accessible_toilet"],
+        )
+        self.assertEqual(result["verdict"], "flagged")
+
+
+class TestCandidateIntent(unittest.TestCase):
+    def test_restaurants_are_not_requested_implicitly(self):
+        state = RunState("Two days in Berlin with quiet parks and museums")
+        state.profile = {"interests": ["history", "park"]}
+        self.assertFalse(_wants_restaurants(state))
+
+    def test_explicit_food_interest_requests_restaurants(self):
+        state = RunState("I want local food and a quiet cafe")
+        state.profile = {"interests": ["history"]}
+        self.assertTrue(_wants_restaurants(state))
 
 
 class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):

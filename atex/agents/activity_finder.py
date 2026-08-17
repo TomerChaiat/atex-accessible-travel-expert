@@ -22,6 +22,22 @@ from ..state import Candidate, RunState
 from ..tools import ToolError, build_toolset
 
 OBSERVATION_WINDOW = 3
+DINING_TERMS = {
+    "cafe",
+    "café",
+    "cuisine",
+    "dining",
+    "food",
+    "meal",
+    "restaurant",
+}
+
+
+def _wants_restaurants(state: RunState) -> bool:
+    profile = state.profile or {}
+    interests = " ".join(str(value) for value in (profile.get("interests") or []))
+    haystack = f"{state.request} {interests}".casefold()
+    return any(term in haystack for term in DINING_TERMS)
 
 
 def _register(state: RunState, place: Place) -> None:
@@ -56,6 +72,8 @@ def _select(ctx: AgentContext, state: RunState, ids: list[str], hotel_id: str | 
         place = ctx.repo.get_place(place_id)
         if place is None:
             continue
+        if place.kind == "restaurant" and not _wants_restaurants(state):
+            continue
         _register(state, place)
         added += 1
     if hotel_id:
@@ -77,7 +95,10 @@ def _fallback_select(ctx: AgentContext, state: RunState, observations) -> int:
         place = ctx.repo.get_place(place_id)
         if place is None:
             continue
-        (hotels if place.kind == "hotel" else activities).append(place.id)
+        if place.kind == "hotel":
+            hotels.append(place.id)
+        elif place.kind != "restaurant" or _wants_restaurants(state):
+            activities.append(place.id)
 
     hotel_id = hotels[0] if (hotels and profile.get("needs_hotel")) else None
     return _select(ctx, state, activities[: wanted + 2], hotel_id)

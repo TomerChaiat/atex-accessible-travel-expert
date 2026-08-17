@@ -157,7 +157,22 @@ def render_itinerary(state: RunState, trace: RunTrace, settings: Settings) -> st
         parts += ["\n## Notes"]
         parts += [f"- {w}" for w in warnings]
 
-    counts = {v: len(state.by_verdict(v)) for v in ("supported", "flagged", "unknown")}
+    # Report unique real venues that actually appear in the plan, not unused
+    # alternatives the finder considered and the validator checked.
+    scheduled_ids = {
+        str(item.get("place_id") or "")
+        for day in days
+        for item in (day.get("items") or [])
+        if isinstance(item, dict)
+        and str(item.get("place_id") or "") in state.candidates
+    }
+    if state.selected_hotel_id in state.candidates:
+        scheduled_ids.add(str(state.selected_hotel_id))
+    scheduled = [state.candidates[place_id] for place_id in scheduled_ids]
+    counts = {
+        verdict: sum(1 for candidate in scheduled if candidate.verdict == verdict)
+        for verdict in ("supported", "flagged", "unknown")
+    }
     parts += [
         "\n---",
         LEGEND,
