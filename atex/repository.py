@@ -379,7 +379,14 @@ class GooglePlacesRepository:
                 headers=headers,
                 timeout=20.0,
             )
-        except (HttpError, OSError, TimeoutError) as exc:
+        except HttpError as exc:
+            # A model can return a modified ID, and a saved Google Place ID can
+            # become obsolete. Neither condition should abort the full trip.
+            # Authentication, quota, and provider outages still surface.
+            if exc.status in (400, 404):
+                return None
+            raise RepositoryError(f"Google Place details failed: {exc}") from exc
+        except (OSError, TimeoutError) as exc:
             raise RepositoryError(f"Google Place details failed: {exc}") from exc
         if not isinstance(raw, dict):
             return None

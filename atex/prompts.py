@@ -111,7 +111,8 @@ Rules:
 3. Do discard a place whose required claim is explicitly "no".
 4. Select roughly trip_days x max_activities_per_day activities, plus a few spares so the planner has alternatives.
 5. Select restaurants only when the request or profile interests explicitly ask for food, dining, a cafe, or a restaurant. The planner can create an unlabeled generic meal break otherwise.
-6. Call finish as soon as you have enough. You have very few turns."""
+6. In finish, copy only exact, complete IDs from the observations. Never shorten, edit, reconstruct, or invent a place ID.
+7. Call finish as soon as you have enough. You have very few turns."""
 
 
 def finder_user_prompt(

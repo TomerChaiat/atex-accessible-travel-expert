@@ -17,7 +17,7 @@ from typing import Any
 from .. import ACTIVITY_LOGISTICS_FINDER
 from ..context import AgentContext
 from ..prompts import FINDER_SYSTEM, finder_user_prompt
-from ..repository import Place
+from ..repository import Place, RepositoryError
 from ..state import Candidate, RunState
 from ..tools import ToolError, build_toolset
 
@@ -66,10 +66,38 @@ def _ids_seen(observations: list[dict[str, Any]]) -> list[str]:
     return seen
 
 
+def _finish_selection(
+    args: dict[str, Any], observations: list[dict[str, Any]]
+) -> tuple[list[str], list[str], str | None]:
+    """Accept only exact IDs that came from a provider observation."""
+    observed_ids = set(_ids_seen(observations))
+    activity_ids = [
+        str(value)
+        for value in (args.get("selected_activity_ids") or [])
+        if str(value) in observed_ids
+    ]
+    restaurant_ids = [
+        str(value)
+        for value in (args.get("selected_restaurant_ids") or [])
+        if str(value) in observed_ids
+    ]
+    raw_hotel_id = args.get("selected_hotel_id")
+    hotel_id = (
+        str(raw_hotel_id)
+        if raw_hotel_id and str(raw_hotel_id) in observed_ids
+        else None
+    )
+    return activity_ids, restaurant_ids, hotel_id
+
+
 def _select(ctx: AgentContext, state: RunState, ids: list[str], hotel_id: str | None) -> int:
     added = 0
     for place_id in ids:
-        place = ctx.repo.get_place(place_id)
+        try:
+            place = ctx.repo.get_place(place_id)
+        except RepositoryError as exc:
+            state.log(f"ActivityLogisticsFinder: skipped unavailable place {place_id}: {exc}")
+            continue
         if place is None:
             continue
         if place.kind == "restaurant" and not _wants_restaurants(state):
@@ -77,7 +105,11 @@ def _select(ctx: AgentContext, state: RunState, ids: list[str], hotel_id: str | 
         _register(state, place)
         added += 1
     if hotel_id:
-        hotel = ctx.repo.get_place(hotel_id)
+        try:
+            hotel = ctx.repo.get_place(hotel_id)
+        except RepositoryError as exc:
+            state.log(f"ActivityLogisticsFinder: skipped unavailable hotel {hotel_id}: {exc}")
+            hotel = None
         if hotel is not None and hotel.kind == "hotel":
             _register(state, hotel)
             state.selected_hotel_id = hotel.id
@@ -92,7 +124,11 @@ def _fallback_select(ctx: AgentContext, state: RunState, observations) -> int:
 
     activities, hotels = [], []
     for place_id in ids:
-        place = ctx.repo.get_place(place_id)
+        try:
+            place = ctx.repo.get_place(place_id)
+        except RepositoryError as exc:
+            state.log(f"ActivityLogisticsFinder: skipped unavailable place {place_id}: {exc}")
+            continue
         if place is None:
             continue
         if place.kind == "hotel":
@@ -138,11 +174,9 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
         args = action.get("args") if isinstance(action.get("args"), dict) else {}
 
         if tool_name == "finish":
-            activity_ids = [str(i) for i in (args.get("selected_activity_ids") or [])]
-            restaurant_ids = [str(i) for i in (args.get("selected_restaurant_ids") or [])]
-            hotel_id = args.get("selected_hotel_id")
+            activity_ids, restaurant_ids, hotel_id = _finish_selection(args, observations)
             added = _select(
-                ctx, state, activity_ids + restaurant_ids, str(hotel_id) if hotel_id else None
+                ctx, state, activity_ids + restaurant_ids, hotel_id
             )
             state.log(f"ActivityLogisticsFinder: selected {added} places in {iteration + 1} turns")
             finished = True

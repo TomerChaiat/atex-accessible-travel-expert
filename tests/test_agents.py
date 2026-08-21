@@ -20,16 +20,17 @@ from atex.agents.accessibility_validator import (  # noqa: E402
     _sanitize,
     retrieve_evidence,
 )
-from atex.agents.activity_finder import _wants_restaurants  # noqa: E402
+from atex.agents.activity_finder import _finish_selection, _wants_restaurants  # noqa: E402
 from atex.agents.supervisor import _legalize, decide  # noqa: E402
 from atex.agents.schedule_planner import _enforce_verdicts, _flagged_reason  # noqa: E402
 from atex.agents.user_profile import normalize_profile  # noqa: E402
 from atex.config import load_settings  # noqa: E402
 from atex.graph import run_agent  # noqa: E402
-from atex.httpjson import extract_json_object  # noqa: E402
+from atex.httpjson import HttpError, extract_json_object  # noqa: E402
 from atex.repository import (  # noqa: E402
     GooglePlacesRepository,
     LocalRepository,
+    RepositoryError,
     travel_estimate,
 )
 from atex.render import render_itinerary  # noqa: E402
@@ -244,6 +245,25 @@ class TestCandidateIntent(unittest.TestCase):
         state.profile = {"interests": ["history"]}
         self.assertTrue(_wants_restaurants(state))
 
+    def test_finish_rejects_ids_not_returned_by_the_provider(self):
+        observations = [
+            {
+                "tool": "search_activities",
+                "result": {"results": [{"id": "gmp:ChIJ-valid"}]},
+            }
+        ]
+        activities, restaurants, hotel = _finish_selection(
+            {
+                "selected_activity_ids": ["gmp:ChIJ-valid", "gmp:i_modified"],
+                "selected_restaurant_ids": ["gmp:invented-restaurant"],
+                "selected_hotel_id": "gmp:invented-hotel",
+            },
+            observations,
+        )
+        self.assertEqual(activities, ["gmp:ChIJ-valid"])
+        self.assertEqual(restaurants, [])
+        self.assertIsNone(hotel)
+
 
 class TestGooglePlacesRepository(unittest.TestCase):
     def test_google_key_selects_live_repository_backend(self):
@@ -306,6 +326,19 @@ class TestGooglePlacesRepository(unittest.TestCase):
         repo = GooglePlacesRepository(SimpleNamespace(google_maps_api_key="key"))
         with patch("atex.repository.post_json", return_value=payload):
             self.assertEqual(repo.search_places("Rome", "activity"), [])
+
+    def test_invalid_or_obsolete_google_id_is_skipped(self):
+        repo = GooglePlacesRepository(SimpleNamespace(google_maps_api_key="key"))
+        error = HttpError(400, '{"error":{"status":"INVALID_ARGUMENT"}}', "test-url")
+        with patch("atex.repository.get_json", side_effect=error):
+            self.assertIsNone(repo.get_place("gmp:i_modified"))
+
+    def test_google_auth_error_still_surfaces(self):
+        repo = GooglePlacesRepository(SimpleNamespace(google_maps_api_key="bad-key"))
+        error = HttpError(403, '{"error":{"status":"PERMISSION_DENIED"}}', "test-url")
+        with patch("atex.repository.get_json", side_effect=error):
+            with self.assertRaises(RepositoryError):
+                repo.get_place("gmp:ChIJ-valid")
 
     def test_empty_live_discovery_routes_to_planner_at_search_limit(self):
         state = RunState(request="Four days in Rome")
