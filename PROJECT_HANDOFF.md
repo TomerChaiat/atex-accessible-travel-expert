@@ -1,9 +1,3 @@
-# ATEX Project Handoff Prompt
-
-Copy the prompt below into a new chat when continuing development of this project.
-
----
-
 I need your help continuing development of my project:
 
 `atex-accessible-travel-expert-main`
