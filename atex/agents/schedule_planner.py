@@ -61,6 +61,98 @@ def _canonical_placeholder_id(item: dict[str, Any]) -> str:
     return "rest-break"
 
 
+def _is_meal(item: dict[str, Any] | None) -> bool:
+    if not item:
+        return False
+    return (
+        _normalise_label(item.get("kind")) == "meal"
+        or str(item.get("place_id") or "") == "meal-break"
+    )
+
+
+def _is_rest(item: dict[str, Any] | None) -> bool:
+    if not item:
+        return False
+    return (
+        _normalise_label(item.get("kind")) == "rest"
+        or str(item.get("place_id") or "") == "rest-break"
+    )
+
+
+def _compact_breaks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove rest rows that add noise instead of useful recovery time.
+
+    A midday meal already provides downtime. A rest immediately beside it is
+    redundant, while an end-of-day rest is simply the end of the itinerary.
+    At most one other explicit rest is retained in a day.
+    """
+    compact: list[dict[str, Any]] = []
+    kept_rest = False
+    activities_since_downtime = 0
+    for index, item in enumerate(items):
+        if not _is_rest(item):
+            compact.append(item)
+            if _is_meal(item):
+                activities_since_downtime = 0
+            elif _normalise_label(item.get("kind")) != "transfer":
+                activities_since_downtime += 1
+            continue
+
+        previous = items[index - 1] if index else None
+        following = items[index + 1] if index + 1 < len(items) else None
+        redundant = (
+            index == 0
+            or index == len(items) - 1
+            or _is_meal(previous)
+            or _is_meal(following)
+            or kept_rest
+            or activities_since_downtime < 2
+        )
+        if redundant:
+            continue
+        compact.append(item)
+        kept_rest = True
+        activities_since_downtime = 0
+    return compact
+
+
+def _travel_lookup(matrix: list[dict[str, Any]] | None) -> dict[tuple[str, str], dict[str, Any]]:
+    lookup: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in matrix or []:
+        if not isinstance(row, dict):
+            continue
+        origin = str(row.get("from") or "")
+        destination = str(row.get("to") or "")
+        if not origin or not destination:
+            continue
+        lookup[tuple(sorted((origin, destination)))] = row
+    return lookup
+
+
+def _attach_travel_estimates(
+    state: RunState,
+    items: list[dict[str, Any]],
+    lookup: dict[tuple[str, str], dict[str, Any]],
+) -> bool:
+    """Attach pairwise estimates between consecutive real scheduled venues."""
+    previous_place_id: str | None = None
+    attached = False
+    for item in items:
+        place_id = str(item.get("place_id") or "")
+        if place_id not in state.candidates:
+            continue
+        if previous_place_id and previous_place_id != place_id:
+            estimate = lookup.get(tuple(sorted((previous_place_id, place_id))))
+            if estimate is not None:
+                item["travel_from_previous"] = {
+                    "min": estimate.get("min"),
+                    "km": estimate.get("km"),
+                }
+                attached = True
+        previous_place_id = place_id
+    return attached
+
+
 def _ordered_candidates(state: RunState) -> list:
     """Order candidates for planning while retaining rejected ones in state.
 
@@ -95,8 +187,13 @@ def _flagged_reason(candidate: Any) -> str:
     )
 
 
-def _enforce_verdicts(state: RunState, itinerary: dict[str, Any]) -> dict[str, Any]:
+def _enforce_verdicts(
+    state: RunState,
+    itinerary: dict[str, Any],
+    travel_estimates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     scheduled_non_ok: list[tuple[str, str, str]] = []
+    matrix_lookup = _travel_lookup(travel_estimates)
 
     days = itinerary.get("days")
     if not isinstance(days, list):
@@ -146,6 +243,8 @@ def _enforce_verdicts(state: RunState, itinerary: dict[str, Any]) -> dict[str, A
                 # verdict, so it cannot be presented as checked.
                 item["accessibility"] = "unknown"
             clean_items.append(item)
+        clean_items = _compact_breaks(clean_items)
+        _attach_travel_estimates(state, clean_items, matrix_lookup)
         day["items"] = clean_items
         day["day"] = day.get("day") or index
         clean_days.append(day)
@@ -185,7 +284,8 @@ def _enforce_verdicts(state: RunState, itinerary: dict[str, Any]) -> dict[str, A
             confirm.append(f"{name}: accessibility concerns found. {why}".strip())
     itinerary["things_to_confirm"] = confirm[:12]
 
-    itinerary.setdefault("warnings", [])
+    if not isinstance(itinerary.get("warnings"), list):
+        itinerary["warnings"] = []
     itinerary.setdefault("summary", "")
 
     # Preserve model-provided spare reasons, then deterministically add every
@@ -269,6 +369,6 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
         max_tokens=2000,
     )
 
-    state.itinerary = _enforce_verdicts(state, result)
+    state.itinerary = _enforce_verdicts(state, result, matrix)
     day_count = len(state.itinerary.get("days", []))
     state.log(f"SchedulePlanner: produced a {day_count}-day itinerary")

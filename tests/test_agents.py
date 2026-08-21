@@ -32,8 +32,10 @@ from atex.repository import (  # noqa: E402
     LocalRepository,
     travel_estimate,
 )
+from atex.render import render_itinerary  # noqa: E402
 from atex.state import Candidate, RunState  # noqa: E402
 from atex.tools import ToolError, build_toolset  # noqa: E402
+from atex.tracing import RunTrace  # noqa: E402
 from atex.util import haversine_km  # noqa: E402
 from atex.vectorstore import Match, _public_metadata  # noqa: E402
 
@@ -373,17 +375,68 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
         })
         self.assertEqual(itinerary["days"][0]["items"][0]["accessibility"], "unknown")
 
-    def test_generic_breaks_are_not_labelled(self):
+    def test_lunch_replaces_an_adjacent_rest_and_is_not_labelled(self):
         state = self._state()
         itinerary = _enforce_verdicts(state, {
             "days": [{"day": 1, "items": [
+                {"place_id": "p1", "name": "Unknown Place", "kind": "activity"},
                 {"place_id": "rest-break", "name": "Rest", "kind": "rest"},
                 {"place_id": "meal-break", "name": "Lunch", "kind": "meal"},
             ]}],
         })
         self.assertEqual(
-            [i["accessibility"] for i in itinerary["days"][0]["items"]], ["n/a", "n/a"]
+            [i["accessibility"] for i in itinerary["days"][0]["items"]],
+            ["unknown", "n/a"],
         )
+
+    def test_end_of_day_rest_is_removed_and_only_one_useful_rest_is_kept(self):
+        state = self._state()
+        state.candidates["p3"] = Candidate(
+            "p3", "Second Place", "activity", {}, verdict="supported"
+        )
+        state.candidates["p4"] = Candidate(
+            "p4", "Third Place", "activity", {}, verdict="supported"
+        )
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": [
+                {"place_id": "p1", "name": "Unknown Place", "kind": "activity"},
+                {"place_id": "p3", "name": "Second Place", "kind": "activity"},
+                {"place_id": "rest-break", "name": "Rest", "kind": "rest"},
+                {"place_id": "p4", "name": "Third Place", "kind": "activity"},
+                {"place_id": "rest-break", "name": "Another rest", "kind": "rest"},
+                {"place_id": "p3", "name": "Second Place again", "kind": "activity"},
+                {"place_id": "rest-break", "name": "Final rest", "kind": "rest"},
+            ]}],
+        })
+        items = itinerary["days"][0]["items"]
+        self.assertEqual(sum(item["place_id"] == "rest-break" for item in items), 1)
+        self.assertNotEqual(items[-1]["place_id"], "rest-break")
+
+    def test_pairwise_travel_estimate_is_attached_across_a_generic_lunch(self):
+        state = self._state()
+        state.candidates["p3"] = Candidate(
+            "p3", "Second Place", "activity", {}, verdict="supported"
+        )
+        itinerary = _enforce_verdicts(
+            state,
+            {
+                "days": [{"day": 1, "items": [
+                    {"place_id": "p1", "name": "Unknown Place", "kind": "activity"},
+                    {"place_id": "meal-break", "name": "Lunch", "kind": "meal"},
+                    {"place_id": "p3", "name": "Second Place", "kind": "activity"},
+                ]}],
+            },
+            [{"from": "p1", "to": "p3", "min": 14, "km": 1.5}],
+        )
+        destination = itinerary["days"][0]["items"][2]
+        self.assertEqual(destination["travel_from_previous"], {"min": 14, "km": 1.5})
+
+        state.profile = {"destination": "Test City", "trip_days": 1}
+        state.itinerary = itinerary
+        settings = load_settings()
+        rendered = render_itinerary(state, RunTrace(settings.budget), settings)
+        self.assertIn("1.5 km · 14 min", rendered)
+        self.assertNotIn("accessible route", rendered.lower())
 
     def test_generic_rows_cannot_borrow_candidate_verdicts(self):
         state = self._state()
@@ -407,10 +460,9 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
         items = itinerary["days"][0]["items"]
         self.assertEqual(
             [item["accessibility"] for item in items],
-            ["n/a", "n/a"],
+            ["n/a"],
         )
         self.assertEqual(items[0]["place_id"], "meal-break")
-        self.assertEqual(items[1]["place_id"], "rest-break")
         self.assertNotIn("Lunch break", " ".join(itinerary["things_to_confirm"]))
         self.assertNotIn("Hotel rest", " ".join(itinerary["things_to_confirm"]))
         self.assertIn(

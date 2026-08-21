@@ -151,7 +151,9 @@ def travel_matrix(places: list[Place], mode: str = "accessible_transit") -> list
             matrix.append(
                 {
                     "from": estimate["from"],
+                    "from_name": a.name,
                     "to": estimate["to"],
+                    "to_name": b.name,
                     "min": estimate["duration_min"],
                     "km": estimate["distance_km"],
                 }

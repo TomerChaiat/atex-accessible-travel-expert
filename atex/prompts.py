@@ -207,7 +207,7 @@ Return one JSON object:
 Rules:
 1. Respect max_activities_per_day. A relaxed pace means fewer stops and longer gaps, not a tighter schedule.
 2. Group each day geographically using the travel estimates given. Do not zig-zag across the city.
-3. Insert an explicit rest item after roughly every two activities, and a meal item near midday.
+3. Add one meal near midday on a full day; lunch already counts as a break. Add at most one explicit rest per day, only after two consecutive activities or when the profile specifically requires it. Never put a rest immediately before or after a meal, and never add a rest at the end of the day.
 4. For a generic meal or rest with no named candidate venue, use `meal-break` or `rest-break` as place_id and `n/a` as accessibility. Never borrow a nearby hotel, attraction, or restaurant ID for a generic break.
 5. Only a meal that names a candidate restaurant may use that restaurant's place_id and verdict.
 6. Never schedule a candidate whose accessibility value is flagged. Put it in not_scheduled and copy its concrete accessibility_summary, concerns, and conditions into the reason.

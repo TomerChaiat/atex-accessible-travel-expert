@@ -407,17 +407,6 @@ class FakeLLMBackend:
                         used.add(meal["place_id"])
                     minutes = max(minutes, 12 * 60 + 30) + 60
 
-            if items:
-                items.append({
-                    "time": _clock(minutes),
-                    "place_id": "rest-break",
-                    "name": "Rest and recharge",
-                    "kind": "rest",
-                    "duration_min": 45,
-                    "accessibility": "n/a",
-                    "note": "Deliberate downtime before the evening.",
-                })
-
             days.append({
                 "day": day_number,
                 "theme": _theme(items),
