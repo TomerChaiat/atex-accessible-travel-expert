@@ -77,7 +77,7 @@ the trace. A test enforces this.
 
 | Module | Role | Cost |
 |---|---|---|
-| `Supervisor` | Routing, invariants, replanning, clarification | 1 call per turn |
+| `Supervisor` | Routing, invariants, trip shape, replanning, clarification | 1 call per turn |
 | `UserProfileAgent` | Free text → structured profile | 1 call |
 | `ActivityLogisticsFinder` | ReAct over live Google Places results | ≤ 8 calls per round |
 | `AccessibilityValidator` | RAG verdicts with cited evidence | 1 call per 5 places |

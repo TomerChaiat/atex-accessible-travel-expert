@@ -124,14 +124,12 @@ def _select(ctx: AgentContext, state: RunState, ids: list[str], hotel_id: str | 
 def activities_needed(state: RunState) -> int:
     """How many activities this trip actually requires.
 
-    A two-week trip at three stops a day needs forty-odd places. Leaving the
-    model to infer that from `trip_days` produced itineraries with one short
-    activity on most days, so the number is computed and stated outright.
+    Trip length times the Supervisor's chosen stops-per-day. Leaving the model
+    to infer this produced itineraries with one short activity on most days, so
+    the number is computed and stated outright.
     """
-    profile = state.profile or {}
-    days = max(1, int(profile.get("trip_days") or 3))
-    per_day = max(1, int(profile.get("max_activities_per_day") or 2))
-    return days * per_day
+    days = max(1, int((state.profile or {}).get("trip_days") or 3))
+    return days * max(1, int(state.shape["activities_per_day"]))
 
 
 def _fallback_select(ctx: AgentContext, state: RunState, observations) -> int:

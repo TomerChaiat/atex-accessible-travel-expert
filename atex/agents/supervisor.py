@@ -20,7 +20,7 @@ from .. import (
 )
 from ..context import AgentContext
 from ..prompts import SUPERVISOR_SYSTEM, supervisor_user_prompt
-from ..state import RunState
+from ..state import RunState, normalize_plan_shape
 
 ASK_USER = "ASK_USER"
 FINISH = "FINISH"
@@ -189,6 +189,16 @@ def decide(ctx: AgentContext, state: RunState) -> Decision:
         max_tokens=300,
     )
     ctx.trace.supervisor_turns += 1
+
+    # How full a day should be is a judgement about this request, so the
+    # Supervisor makes it once and every downstream module works to it.
+    if state.profile is not None and state.plan_shape is None:
+        state.plan_shape = normalize_plan_shape(raw.get("plan_shape"), state.profile)
+        shape = state.plan_shape
+        state.log(
+            f"Supervisor: plan shape {shape['activities_per_day']}/day, "
+            f"{shape['day_start']}-{shape['day_end']}"
+        )
 
     choice = str(raw.get("next_module") or "").strip()
     if choice not in CHOICES:

@@ -159,7 +159,33 @@ holds together whichever one the traveller picks, and each row states both the
 distance and what the schedule allowed. Times stay addable: no gap appears that
 the itinerary has not already explained.
 
-### 5. Token and call efficiency
+### 5. The shape of a day is a decision, not a constant
+
+How many attractions belong in a day started life as a lookup table: relaxed
+two, moderate three, packed four, keyed off one word the profile agent chose.
+It produced exactly the failure you would predict. A traveller who asked for
+"more than two attractions per day and finishing the day late" got two stops
+ending at 13:40, because the table had already decided before anyone read the
+sentence.
+
+Worse, the invented number was indistinguishable from a stated one. Downstream
+modules could not tell "the traveller asked for three" from "a table guessed
+three", so neither could override it sensibly.
+
+Now `UserProfileAgent` records only what was actually said — `null` when the
+traveller did not say — and the Supervisor decides `plan_shape`
+(`activities_per_day`, `day_start`, `day_end`) once, from the request itself.
+That decision flows to `ActivityLogisticsFinder`, which sizes its search by
+`trip_days × activities_per_day`, and to `SchedulePlanner`, which is told to
+*hit* that number rather than stay under it.
+
+The reasoning belongs in the Supervisor because it is the module that sees the
+whole request rather than a summarised field, and because it is already the
+system's judgement layer. `normalize_plan_shape()` clamps the answer into
+plannable bounds and derives a fallback if the field is missing — a guard, not
+a policy.
+
+### 6. Token and call efficiency
 
 | Technique | Effect |
 |---|---|
@@ -174,7 +200,7 @@ the itinerary has not already explained.
 A three-day trip costs roughly 12–14 calls and ~15k tokens; a two-week trip
 nearer 35–45 calls and ~90k tokens.
 
-### 6. Guardrails with reserved headroom
+### 7. Guardrails with reserved headroom
 
 Limits on supervisor turns, total calls, tokens and wall-clock live in one
 `Budget` object. Each keeps a **reserve**.
@@ -189,7 +215,7 @@ the candidate count, one place stayed permanently unvalidated and `Supervisor`
 routed back to the validator until it burned every turn. Unchecked places are now
 settled as `unknown`, which both terminates the loop and states the truth.
 
-### 7. Conversation state on a stateless platform
+### 8. Conversation state on a stateless platform
 
 Serverless functions keep nothing between requests, but the response schema is
 fixed to four top-level fields, so a session id cannot be returned in it.
@@ -201,7 +227,7 @@ profile, verdicts, itinerary draft — not a transcript. Verdicts are deliberate
 reused across turns: they cost LLM calls and do not change between them, which
 makes a follow-up turn roughly a fifth the cost of the first.
 
-### 8. Every external service has an offline fallback
+### 9. Every external service has an offline fallback
 
 The LLM, embeddings, vector store and database each resolve to a local
 implementation when credentials are absent. The system runs end-to-end, and the
@@ -211,7 +237,7 @@ This was not a convenience. It let the entire architecture be built and tested
 before any key existed, and it keeps the test suite free to run — no key, no
 quota, no network.
 
-### 9. A hand-rolled orchestrator over a graph framework
+### 10. A hand-rolled orchestrator over a graph framework
 
 Nodes are written in the shape a graph framework expects —
 `(ctx, state, instruction) -> None`, mutating shared state — but the loop driving

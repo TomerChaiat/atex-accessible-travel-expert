@@ -15,7 +15,9 @@ Important distinction: the application itself intentionally uses LLMs. Do not re
 - Supervisor coordinates the agents.
 - LLMod supplies the text and embedding models.
 - The production application does not use Supabase.
-- The bundled local catalogue and fake backend are only offline fallbacks, not the intended production data source.
+- The repository ships no place catalogue and no accessibility evidence: `data/seed/` and `data/kb/` are empty.
+- The fake LLM backend and the keyless local backends are development fallbacks, never a production data source.
+- `tests/fixtures/` holds a small catalogue and corpus used only by the test suite, so it runs without API keys.
 
 ## Production environment variables
 
@@ -75,6 +77,9 @@ The `.env.example` file should exist locally for documentation but remain ignore
 
     The schedule is laid out on the slowest offered mode, so it holds whichever
     the traveller picks. Do not insert gaps the itinerary has not explained.
+16. Google Place IDs must be copied exactly from provider observations. Invalid, altered, or obsolete IDs should be skipped without crashing the itinerary.
+17. Do not expose Pinecone confidence fields or `classification_version` in the application or UI.
+18. Accessibility evidence explanations should be concise but complete and must not end with a truncated sentence.
 19. A hotel is never an activity. It belongs in "Where you'll stay", so a trip
     that keeps one hotel throughout has no hotel row in any day — scheduling
     it duplicates the section and, with its zero duration, collides with the
@@ -88,9 +93,20 @@ The `.env.example` file should exist locally for documentation but remain ignore
       end-to-end. The `stay` row is the seam that change would build on.
 20. The GUI must offer a one-click download of the full run logs, covering
     every turn in the conversation.
-16. Google Place IDs must be copied exactly from provider observations. Invalid, altered, or obsolete IDs should be skipped without crashing the itinerary.
-17. Do not expose Pinecone confidence fields or `classification_version` in the application or UI.
-18. Accessibility evidence explanations should be concise but complete and must not end with a truncated sentence.
+21. How full a day is, is the Supervisor's decision, not a fixed table. It
+    reads the request and sets `plan_shape` once — `activities_per_day`,
+    `day_start`, `day_end` — which the finder uses to size its search and the
+    planner uses to fill each day. "More than two attractions per day" means at
+    least three; "finishing late" means an evening `day_end`; "relaxed" means
+    fewer stops. When the traveller says nothing, the Supervisor still decides
+    something sensible. `activities_per_day` is a target to hit, not a ceiling
+    to undershoot: never leave a day short while candidates remain unused.
+22. Never show a provider place ID to the traveller. "Confirm before you
+    travel" carries the venue name and what to check, nothing else.
+23. "Considered but not scheduled" is for places actively rejected — a stated
+    accessibility concern, an unreachable location, a duplicate. A merely
+    unverified place that was not needed is surplus, not a rejection, and must
+    not be listed. Cap the section and collapse the remainder into one count.
 
 ## Quick examples
 

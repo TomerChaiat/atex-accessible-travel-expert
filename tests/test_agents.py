@@ -39,6 +39,7 @@ from atex.agents.activity_finder import (  # noqa: E402
 )
 from atex.agents.supervisor import MAX_FINDER_ROUNDS, _legalize, decide  # noqa: E402
 from atex.agents.schedule_planner import (  # noqa: E402
+    MAX_NOT_SCHEDULED,
     _enforce_verdicts,
     _flagged_reason,
     _parse_time,
@@ -63,7 +64,12 @@ from atex.routing import (  # noqa: E402
     planning_option,
     self_powered_limit_km,
 )
-from atex.state import Candidate, RunState  # noqa: E402
+from atex.state import (  # noqa: E402
+    MAX_ACTIVITIES_PER_DAY,
+    Candidate,
+    RunState,
+    normalize_plan_shape,
+)
 from atex.tools import ToolError, build_toolset  # noqa: E402
 from atex.tracing import RunTrace  # noqa: E402
 from atex.util import haversine_km  # noqa: E402
@@ -81,8 +87,17 @@ class TestProfileNormalisation(unittest.TestCase):
         profile = normalize_profile({"sensory": {"autism_friendly": True}})
         self.assertIn("quiet_space", profile["accessibility_needs"])
 
-    def test_relaxed_pace_defaults_to_two_activities(self):
-        self.assertEqual(normalize_profile({"pace": "relaxed"})["max_activities_per_day"], 2)
+    def test_an_unstated_activity_limit_is_left_for_the_supervisor(self):
+        # Inventing a number here made it indistinguishable from something the
+        # traveller actually said, and left the Supervisor nothing to decide.
+        profile = normalize_profile({"pace": "relaxed"})
+        self.assertIsNone(profile["max_activities_per_day"])
+        self.assertEqual(profile["pace"], "relaxed")
+
+    def test_a_stated_activity_limit_is_kept(self):
+        self.assertEqual(
+            normalize_profile({"max_activities_per_day": 4})["max_activities_per_day"], 4
+        )
 
     def test_invented_needs_are_discarded(self):
         profile = normalize_profile({"accessibility_needs": ["teleportation", "lift_access"]})
@@ -91,7 +106,7 @@ class TestProfileNormalisation(unittest.TestCase):
     def test_absurd_values_are_clamped(self):
         profile = normalize_profile({"trip_days": 400, "max_activities_per_day": 99})
         self.assertLessEqual(profile["trip_days"], MAX_TRIP_DAYS)
-        self.assertLessEqual(profile["max_activities_per_day"], 5)
+        self.assertLessEqual(profile["max_activities_per_day"], MAX_ACTIVITIES_PER_DAY)
 
     def test_garbage_input_still_yields_a_usable_profile(self):
         profile = normalize_profile({"trip_days": "banana", "interests": None})
@@ -1190,6 +1205,146 @@ class TestRetrievalRecall(unittest.TestCase):
 
         self.assertTrue(specific)
         self.assertIn({"city": "Rome"}, vectors.filters)
+
+
+class TestPlanShape(unittest.TestCase):
+    """How full a day is, is the Supervisor's call -- not a fixed table."""
+
+    def test_the_supervisors_choice_wins_over_the_stated_limit(self):
+        shape = normalize_plan_shape(
+            {"activities_per_day": 4, "day_start": "09:00", "day_end": "21:00"},
+            {"max_activities_per_day": 2},
+        )
+        self.assertEqual(shape["activities_per_day"], 4)
+        self.assertEqual(shape["day_end"], "21:00")
+
+    def test_a_late_finish_is_carried_through(self):
+        shape = normalize_plan_shape({"day_start": "10:00", "day_end": "22:30"}, {})
+        self.assertEqual(shape["day_start"], "10:00")
+        self.assertEqual(shape["day_end"], "22:30")
+
+    def test_a_missing_decision_falls_back_to_the_stated_limit(self):
+        shape = normalize_plan_shape(None, {"max_activities_per_day": 5})
+        self.assertEqual(shape["activities_per_day"], 5)
+
+    def test_a_missing_decision_and_no_limit_still_yields_a_usable_day(self):
+        shape = normalize_plan_shape(None, {"pace": "relaxed"})
+        self.assertEqual(shape["activities_per_day"], 2)
+        self.assertGreater(_parse_time(shape["day_end"]), _parse_time(shape["day_start"]))
+
+    def test_nonsense_values_cannot_produce_an_unplannable_day(self):
+        shape = normalize_plan_shape(
+            {"activities_per_day": 99, "day_start": "25:99", "day_end": "01:00"}, {}
+        )
+        self.assertLessEqual(shape["activities_per_day"], MAX_ACTIVITIES_PER_DAY)
+        self.assertGreater(_parse_time(shape["day_end"]), _parse_time(shape["day_start"]))
+
+    def test_the_day_starts_when_the_supervisor_said(self):
+        state = RunState("x")
+        state.plan_shape = normalize_plan_shape({"day_start": "11:00"}, {})
+        state.candidates["p1"] = Candidate("p1", "A Place", "activity", {}, verdict="supported")
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": [
+                {"place_id": "p1", "name": "A Place", "kind": "activity", "duration_min": 90},
+            ]}],
+        })
+        self.assertEqual(itinerary["days"][0]["items"][0]["time"], "11:00")
+
+    def test_the_finder_is_asked_for_enough_places_to_fill_the_shape(self):
+        state = RunState("x")
+        state.profile = {"trip_days": 7}
+        state.plan_shape = normalize_plan_shape({"activities_per_day": 4}, {})
+        self.assertEqual(activities_needed(state), 28)
+
+
+class TestResponseTidiness(unittest.TestCase):
+    """The response is read by a traveller, not by a developer."""
+
+    def _state(self):
+        state = RunState("x")
+        state.candidates["gmp:ChIJWT0gUBz2wokRNcAxVUphAAs"] = Candidate(
+            "gmp:ChIJWT0gUBz2wokRNcAxVUphAAs",
+            "El Museo del Barrio",
+            "activity",
+            {},
+            verdict="unknown",
+        )
+        return state
+
+    def test_place_ids_never_reach_the_confirm_list(self):
+        # The planner prefixes these lines with the raw Google ID it was
+        # working from. A traveller cannot act on that.
+        state = self._state()
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": [{
+                "place_id": "gmp:ChIJWT0gUBz2wokRNcAxVUphAAs",
+                "name": "El Museo del Barrio",
+                "kind": "activity",
+            }]}],
+            "things_to_confirm": [
+                "gmp:ChIJWT0gUBz2wokRNcAxVUphAAs - El Museo del Barrio: confirm step-free entrance."
+            ],
+        })
+        confirm = itinerary["things_to_confirm"]
+        self.assertTrue(confirm)
+        joined = " ".join(confirm)
+        self.assertNotIn("gmp:", joined)
+        self.assertNotIn("ChIJWT0gUBz2wokRNcAxVUphAAs", joined)
+        self.assertIn("El Museo del Barrio", joined)
+        self.assertIn("step-free entrance", joined)
+
+    def test_a_confirm_line_we_generate_uses_the_venue_name(self):
+        state = self._state()
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": [{
+                "place_id": "gmp:ChIJWT0gUBz2wokRNcAxVUphAAs",
+                "kind": "activity",
+            }]}],
+        })
+        joined = " ".join(itinerary["things_to_confirm"])
+        self.assertIn("El Museo del Barrio", joined)
+        self.assertNotIn("gmp:", joined)
+
+    def test_surplus_unverified_places_are_not_listed_as_rejections(self):
+        # An unverified place is usable, so "no evidence" is not a reason to
+        # reject it. Forty such entries buried the ones that mattered.
+        state = RunState("x")
+        for i in range(30):
+            state.candidates[f"u{i}"] = Candidate(
+                f"u{i}", f"Museum {i}", "activity", {}, verdict="unknown"
+            )
+        state.candidates["bad"] = Candidate(
+            "bad", "Steps Museum", "activity", {},
+            verdict="flagged",
+            verdict_detail={"summary": "The only entrance described has steps."},
+        )
+        itinerary = _enforce_verdicts(state, {
+            "days": [],
+            "not_scheduled": [
+                {"place_id": f"u{i}", "name": f"Museum {i}",
+                 "reason": "Unknown accessibility; no information in the knowledge base."}
+                for i in range(30)
+            ],
+        })
+        entries = itinerary["not_scheduled"]
+        dicts = [e for e in entries if isinstance(e, dict)]
+        self.assertLessEqual(len(dicts), MAX_NOT_SCHEDULED)
+        # The one real concern survives, and is first.
+        self.assertEqual(dicts[0]["place_id"], "bad")
+        # The rest collapse into a single honest count.
+        tail = [e for e in entries if isinstance(e, str)]
+        self.assertEqual(len(tail), 1)
+        self.assertIn("30", tail[0])
+
+    def test_a_short_rejection_list_gets_no_overflow_line(self):
+        state = RunState("x")
+        state.candidates["bad"] = Candidate(
+            "bad", "Steps Museum", "activity", {},
+            verdict="flagged",
+            verdict_detail={"summary": "Steps at the only entrance."},
+        )
+        itinerary = _enforce_verdicts(state, {"days": [], "not_scheduled": []})
+        self.assertTrue(all(isinstance(e, dict) for e in itinerary["not_scheduled"]))
 
 
 class TestRunCapacity(unittest.TestCase):

@@ -36,8 +36,16 @@ Rules:
 5. Choose ASK_USER only when the request cannot be worked at all, such as no destination. A missing detail that has a reasonable default is not a blocker.
 6. Choose FINISH only after SchedulePlanner has produced an itinerary.
 
+You also decide the shape of the trip: how many attractions belong in a day, and the hours the day runs. This is your judgement about this specific request, not a fixed rule.
+- Read what the traveller asked for. "More than two attractions per day" means at least three. "Finishing the day late" means the day ends in the evening, around 20:00 or later. "Relaxed" means fewer stops and an earlier finish.
+- When they say nothing about pace, choose a sensible shape anyway. Consider the trip length, their mobility, and whether they are travelling with others. A powered wheelchair user on a short city trip can comfortably do three or four stops; someone who tires easily should do fewer.
+- Never plan a day emptier than what was asked for. If they wanted a full day, fill it.
+
 Reply with one JSON object and nothing else:
-{"reasoning": "at most 30 words", "next_module": "<module>", "instruction": "<one sentence for that module>", "clarification_question": null}
+{"reasoning": "at most 30 words", "next_module": "<module>", "instruction": "<one sentence for that module>", "clarification_question": null,
+ "plan_shape": {"activities_per_day": <int>, "day_start": "HH:MM", "day_end": "HH:MM", "why": "at most 20 words"}}
+
+Set plan_shape on the first turn where profile_ready is true and plan_shape is still null. On every other turn set it to null; it is decided once and reused.
 
 next_module must be exactly one of: UserProfileAgent, ActivityLogisticsFinder, AccessibilityValidator, SchedulePlanner, ASK_USER, FINISH."""
 
@@ -217,17 +225,17 @@ Return one JSON object:
 }
 
 Rules:
-1. Respect max_activities_per_day. A relaxed pace means fewer stops and longer gaps, not a tighter schedule.
+1. plan_shape is the shape of the trip, decided for this traveller. Give every day `activities_per_day` real attractions -- that is a target to hit, not a ceiling to stay under. Start the first item at `day_start` and keep filling the day; a day that ends hours before `day_end` while unscheduled candidates remain is wrong. Only fall short when there are genuinely no candidates left.
 2. Group each day geographically using the travel estimates given. Do not zig-zag across the city.
 3. Add one meal near midday on a full day; lunch already counts as a break. Add at most one explicit rest per day, only after two consecutive activities or when the profile specifically requires it. Never put a rest immediately before or after a meal, and never add a rest at the end of the day.
 4. For a generic meal or rest with no named candidate venue, use `meal-break` or `rest-break` as place_id and `n/a` as accessibility. Never borrow a nearby hotel, attraction, or restaurant ID for a generic break.
 5. Only a meal that names a candidate restaurant may use that restaurant's place_id and verdict.
 6. Never schedule a candidate whose accessibility value is flagged. Put it in not_scheduled and copy its concrete accessibility_summary, concerns, and conditions into the reason.
-7. Unknown means NOT VERIFIED, not unusable. When there are not enough supported places, schedule suitable unknown candidates rather than leaving a day light solely because they are unverified. Label them unknown and require direct confirmation.
+7. Unknown means NOT VERIFIED, not unusable. Schedule unknown candidates freely to reach activities_per_day; label them unknown and require direct confirmation. Never leave a day short while unknown candidates are unused, and never list an unknown candidate in not_scheduled with a reason that amounts to "no evidence" -- that is not a reason to reject a place, and it fills the response with noise.
 8. Copy each scheduled real venue's accessibility value from the verdicts provided. Never upgrade a verdict or write "accessible" about an unknown place.
 9. When a supported candidate has conditions, state them briefly in that itinerary item's note. Never hide a companion, booking, or assistance requirement.
-10. Put every unknown real venue you scheduled into things_to_confirm. Never add generic meals, rests, transfers, or unscheduled flagged venues there.
-11. If you dropped another candidate, say why in not_scheduled.
+10. Put every unknown real venue you scheduled into things_to_confirm, written for the traveller: the venue name and what to check, for example "El Museo del Barrio: confirm step-free entrance and accessible toilet." Never put a place_id in that text -- IDs mean nothing to a traveller. Never add generic meals, rests, transfers, or unscheduled flagged venues there.
+11. Use not_scheduled only for candidates you actively rejected -- a stated accessibility concern, or a duplicate of somewhere already scheduled. Say which. Do not list every candidate you simply did not need.
 12. Times must be contiguous: each item's start time equals the previous start time plus its duration. Do not add travel, waiting, or slack gaps yourself. Travel time is measured and inserted afterwards by the system, and adding your own would double-count it. Use the travel estimates only to group each day geographically.
 13. A hotel is never an activity. Accommodation is presented in its own section, so a trip that stays in one hotel throughout has no hotel row in any day. The single exception is a genuine change of accommodation: when the traveller moves to a different hotel part-way through, give the new hotel one row on the day they move in, with kind "stay". Never use a "stay" row for the hotel they are already in."""
 
@@ -237,10 +245,12 @@ def planner_user_prompt(
     candidates: list[dict[str, Any]],
     travel_matrix: list[dict[str, Any]],
     instruction: str,
+    plan_shape: dict[str, Any] | None = None,
 ) -> str:
     return json.dumps(
         {
             "profile": profile,
+            "plan_shape": plan_shape or {},
             "candidates": candidates,
             "travel_estimates": travel_matrix,
             "instruction": instruction,

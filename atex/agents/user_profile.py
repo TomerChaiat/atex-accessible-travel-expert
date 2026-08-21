@@ -13,7 +13,7 @@ from typing import Any
 from .. import USER_PROFILE_AGENT
 from ..context import AgentContext
 from ..prompts import USER_PROFILE_SYSTEM, user_profile_user_prompt
-from ..state import RunState
+from ..state import MAX_ACTIVITIES_PER_DAY, RunState
 
 VALID_NEEDS = {
     "step_free_entrance",
@@ -27,7 +27,7 @@ VALID_NEEDS = {
     "assistance_animals",
 }
 
-PACE_DEFAULTS = {"relaxed": 2, "moderate": 3, "packed": 4}
+VALID_PACE = {"relaxed", "moderate", "packed"}
 
 VALID_TRANSPORT = {"wheelchair_walk", "accessible_transit", "accessible_taxi"}
 
@@ -61,11 +61,14 @@ def normalize_profile(raw: dict[str, Any]) -> dict[str, Any]:
     if bool(sensory.get("low_noise")) or bool(sensory.get("autism_friendly")):
         needs.add("quiet_space")
 
-    pace = raw.get("pace") if raw.get("pace") in PACE_DEFAULTS else None
+    pace = raw.get("pace") if raw.get("pace") in VALID_PACE else None
+    # Only what the traveller actually said. Inventing a number here made it
+    # indistinguishable from a stated preference, and the Supervisor then had
+    # nothing to decide. When this is None, the Supervisor chooses the shape of
+    # the day from the request itself.
     per_day = _as_int(raw.get("max_activities_per_day"))
-    if per_day is None:
-        per_day = PACE_DEFAULTS.get(pace or "moderate", 3)
-    per_day = max(1, min(per_day, 5))
+    if per_day is not None:
+        per_day = max(1, min(per_day, MAX_ACTIVITIES_PER_DAY))
 
     trip_days = _as_int(raw.get("trip_days")) or 3
     trip_days = max(1, min(trip_days, MAX_TRIP_DAYS))
@@ -103,7 +106,7 @@ def normalize_profile(raw: dict[str, Any]) -> dict[str, Any]:
             "low_crowd": bool(sensory.get("low_crowd")),
             "autism_friendly": bool(sensory.get("autism_friendly")),
         },
-        "pace": pace or "moderate",
+        "pace": pace,
         "max_activities_per_day": per_day,
         "budget_level": raw.get("budget_level"),
         "interests": [str(i).lower() for i in (raw.get("interests") or [])][:8],

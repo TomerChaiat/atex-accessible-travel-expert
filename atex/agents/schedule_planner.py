@@ -8,6 +8,7 @@ model wrote.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .. import SCHEDULE_PLANNER
@@ -20,6 +21,16 @@ from ..tools import travel_matrix
 from ..util import truncate
 
 RANK = {"supported": 0, "unknown": 1, "flagged": 2, None: 3}
+
+# "gmp:ChIJWT0gUBz2wokRNcAxVUphAAs" and the bare provider IDs behind it. Long
+# unbroken alphanumeric runs do not occur in the prose these fields hold.
+PLACE_ID_PATTERN = re.compile(r"\b(?:gmp:)?[A-Za-z0-9_-]{22,}\b")
+LEADING_SEPARATOR_PATTERN = re.compile(r"^[\s\W_]+")
+
+# "Considered but not scheduled" is for places the traveller was denied and
+# deserves a reason for. A live city search returns dozens of surplus venues;
+# listing them all buries the handful that matter.
+MAX_NOT_SCHEDULED = 8
 GENERIC_PLACEHOLDER_NAMES = {
     "break",
     "free time",
@@ -80,6 +91,26 @@ def _is_accommodation_change(
         and _normalise_label(item.get("kind")) == "stay"
         and candidate.place_id != state.selected_hotel_id
     )
+
+
+def _readable(text: str, state: RunState) -> str:
+    """Strip provider place IDs out of traveller-facing text.
+
+    The planner habitually prefixes a confirmation line with the raw Google
+    ID it was working from. That means nothing to a traveller, so any known ID
+    becomes its venue name and any stray one is removed, along with the
+    separator it was sitting behind.
+    """
+    cleaned = text or ""
+    for place_id, candidate in state.candidates.items():
+        if place_id and place_id in cleaned:
+            cleaned = cleaned.replace(place_id, candidate.name)
+    cleaned = PLACE_ID_PATTERN.sub("", cleaned)
+    # "  - El Museo del Barrio: ..." once the ID in front of it is gone.
+    cleaned = LEADING_SEPARATOR_PATTERN.sub("", cleaned)
+    # A name replaced into a line that already named it reads as a stutter.
+    cleaned = re.sub(r"^(.{2,60}?)\s*[-–—:]\s*\1\b", r"\1", cleaned)
+    return " ".join(cleaned.split()).strip()
 
 
 def _is_meal(item: dict[str, Any] | None) -> bool:
@@ -175,7 +206,7 @@ def _travel_minutes(item: dict[str, Any]) -> int:
         return 0
 
 
-def _align_item_times(items: list[dict[str, Any]]) -> None:
+def _align_item_times(items: list[dict[str, Any]], day_start: str | None = None) -> None:
     """Lay out contiguous start times that account for getting between venues.
 
     Each start equals the previous item's end plus the travel time shown on
@@ -188,7 +219,9 @@ def _align_item_times(items: list[dict[str, Any]]) -> None:
         return
     cursor = _parse_time(items[0].get("time"))
     if cursor is None:
-        cursor = 9 * 60 + 30
+        cursor = _parse_time(day_start)
+    if cursor is None:
+        cursor = 9 * 60
     for index, item in enumerate(items):
         if index:
             cursor += _travel_minutes(item)
@@ -324,6 +357,62 @@ def _drop_unreachable(
     return dropped
 
 
+def _prune_not_scheduled(
+    state: RunState,
+    entries: list[Any],
+    unreachable: list[tuple[str, str]],
+) -> list[Any]:
+    """Keep the rejections that earned a place in the response, and cap them.
+
+    A live city search returns dozens of surplus venues, and the planner used
+    to list every one it did not need -- forty entries whose reason amounted to
+    "no evidence in the knowledge base". That is not a rejection: an unverified
+    place is usable, and saying otherwise buries the few venues that really do
+    have a concern the traveller needs to read.
+
+    So an unverified candidate that simply was not needed is dropped, concerns
+    come first, and the tail becomes a single count.
+    """
+    unreachable_ids = {place_id for place_id, _ in unreachable}
+
+    def rank(entry: Any) -> int:
+        if not isinstance(entry, dict):
+            return 3
+        candidate = state.candidates.get(str(entry.get("place_id") or ""))
+        if candidate is not None and candidate.verdict == "flagged":
+            return 0  # A real accessibility concern. Always worth the space.
+        if str(entry.get("place_id") or "") in unreachable_ids:
+            return 1
+        return 2
+
+    def worth_listing(entry: Any) -> bool:
+        if rank(entry) < 2:
+            return True
+        if not isinstance(entry, dict):
+            return True
+        candidate = state.candidates.get(str(entry.get("place_id") or ""))
+        # Surplus unverified candidates are not rejections; they are simply
+        # places the itinerary did not need.
+        return not (candidate is not None and candidate.verdict == "unknown")
+
+    kept = sorted((e for e in entries if worth_listing(e)), key=rank)
+    for entry in kept:
+        if isinstance(entry, dict) and entry.get("reason"):
+            entry["reason"] = _readable(str(entry["reason"]), state)
+
+    dropped = len(entries) - len(kept)
+    overflow = max(0, len(kept) - MAX_NOT_SCHEDULED)
+    kept = kept[:MAX_NOT_SCHEDULED]
+
+    remaining = dropped + overflow
+    if remaining:
+        kept.append(
+            f"{remaining} further place(s) were reviewed and not needed for this "
+            "itinerary. None of them was rejected for an accessibility concern."
+        )
+    return kept
+
+
 def _ordered_candidates(state: RunState) -> list:
     """Order candidates for planning while retaining rejected ones in state.
 
@@ -369,6 +458,7 @@ def _enforce_verdicts(
     unreachable: list[tuple[str, str]] = []
     matrix_lookup = _travel_lookup(travel_estimates)
     profile = state.profile or {}
+    shape = state.shape
 
     days = itinerary.get("days")
     if not isinstance(days, list):
@@ -417,8 +507,10 @@ def _enforce_verdicts(
                         str(condition) for condition in conditions[:2]
                     )
                 if verdict == "unknown":
+                    # The candidate's name, never the place_id: a traveller
+                    # cannot act on "gmp:ChIJWT0gUBz2wokRNcAxVUphAAs".
                     scheduled_non_ok.append(
-                        (candidate.place_id, str(item.get("name") or place_id), verdict)
+                        (candidate.place_id, candidate.name or str(item.get("name") or ""), verdict)
                     )
             elif kind in ("rest", "transfer", "meal"):
                 # A generic break the planner invented rather than a real venue;
@@ -437,7 +529,7 @@ def _enforce_verdicts(
         _attach_travel_options(
             state, clean_items, matrix_lookup, router, places, profile
         )
-        _align_item_times(clean_items)
+        _align_item_times(clean_items, shape.get("day_start"))
         day["items"] = clean_items
         day["day"] = day.get("day") or index
         clean_days.append(day)
@@ -453,9 +545,10 @@ def _enforce_verdicts(
         "meal-break",
     )
     confirm = [
-        str(c)
+        readable
         for c in (itinerary.get("things_to_confirm") or [])
         if not any(term in str(c).casefold() for term in generic_confirmation_terms)
+        if (readable := _readable(str(c), state))
     ]
     existing = " ".join(confirm).lower()
     noted: set[str] = set()
@@ -475,7 +568,7 @@ def _enforce_verdicts(
             )
         else:
             confirm.append(f"{name}: accessibility concerns found. {why}".strip())
-    itinerary["things_to_confirm"] = confirm[:12]
+    itinerary["things_to_confirm"] = [_readable(entry, state) for entry in confirm[:12]]
 
     if not isinstance(itinerary.get("warnings"), list):
         itinerary["warnings"] = []
@@ -531,7 +624,7 @@ def _enforce_verdicts(
             }
         )
 
-    itinerary["not_scheduled"] = not_scheduled
+    itinerary["not_scheduled"] = _prune_not_scheduled(state, not_scheduled, unreachable)
     return itinerary
 
 
@@ -587,6 +680,7 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
             candidates=[c.to_planner_dict() for c in candidates],
             travel_matrix=matrix,
             instruction=instruction or "Build the itinerary now.",
+            plan_shape=state.shape,
         ),
         max_tokens=output_tokens,
     )
