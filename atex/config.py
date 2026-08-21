@@ -94,6 +94,13 @@ class Settings:
     supabase_url: str
     supabase_service_key: str
 
+    # Where the keyless backends read from. Empty in a normal checkout: the
+    # place catalogue and knowledge base are things you harvest or ingest, not
+    # content this repository invents and ships. Overridable so the test suite
+    # can point at its own fixtures and stay deterministic without a network.
+    seed_dir: str
+    kb_dir: str
+
     budget: Budget
 
     @property
@@ -131,6 +138,8 @@ def load_settings() -> Settings:
         google_maps_api_key=google_maps_key,
         supabase_url="",
         supabase_service_key="",
+        seed_dir=_env("ATEX_SEED_DIR") or str(SEED_DIR),
+        kb_dir=_env("ATEX_KB_DIR") or str(KB_DIR),
         budget=Budget(),
     )
 

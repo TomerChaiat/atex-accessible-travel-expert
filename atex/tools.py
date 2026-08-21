@@ -76,9 +76,16 @@ def _search(
                 "Try a broader category once, then finish without inventing places."
             )
         else:
+            available = ", ".join(repo.list_cities())
             note = (
-                f"No {kind} entries for '{city}' in the offline sample. "
-                f"Sample cities: {', '.join(repo.list_cities()) or 'none'}."
+                f"No {kind} entries for '{city}' in the local catalogue. "
+                + (
+                    f"Cities present: {available}."
+                    if available
+                    else "The local catalogue is empty. Configure GOOGLE_MAPS_API_KEY "
+                    "for live discovery, or harvest places with scripts/harvest_osm.py. "
+                    "Do not invent places."
+                )
             )
         return {
             "results": [],

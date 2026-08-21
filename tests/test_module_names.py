@@ -6,11 +6,23 @@ rots silently during refactoring, so it gets its own test file.
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# The place catalogue and knowledge base under tests/fixtures/ exist only for
+# these tests. They are deliberately not shipped in data/: the product does not
+# invent accessibility content. Pointing the keyless backends here keeps the
+# suite deterministic with no API keys and no network. Set before importing
+# atex, because settings read the environment at call time.
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+FIXTURE_SEED = FIXTURES / "seed"
+FIXTURE_KB = FIXTURES / "kb"
+os.environ["ATEX_SEED_DIR"] = str(FIXTURE_SEED)
+os.environ["ATEX_KB_DIR"] = str(FIXTURE_KB)
 
 ROOT = Path(__file__).resolve().parent.parent
 

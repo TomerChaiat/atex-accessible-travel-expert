@@ -16,6 +16,7 @@ data/sessions/
 !requirements-dev.txt
 !vercel.json
 !data/**/*.json
+!tests/fixtures/**/*.json
 !atex/static/*.png
 
 # The course assignment PDF is the lecturer's document, not ours to republish

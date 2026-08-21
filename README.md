@@ -20,16 +20,24 @@ Built by [@omer123124](https://github.com/omer123124),
 python scripts/devserver.py
 ```
 
-Open <http://127.0.0.1:8000>. Everything works offline: the agent core imports
-only the standard library, and each external service falls back to a local
-implementation when its credentials are absent.
+Open <http://127.0.0.1:8000>. The agent core imports only the standard library,
+and every external service falls back to a local implementation when its
+credentials are absent — so the app and the whole test suite run with no API
+keys and no network.
+
+What it will not do keyless is invent content. `data/seed/` and `data/kb/` ship
+**empty**: this repository holds no place catalogue and no accessibility
+evidence. Without credentials or harvested data, place search returns nothing
+and every verdict is `unverified`, which is the honest answer rather than a
+fabricated one. See [data/seed/](data/seed/README.md) and
+[data/kb/](data/kb/README.md).
 
 | Service | Configured | Offline fallback |
 |---|---|---|
 | LLM | LLMod.ai `gpt-5.4-mini` | `FakeLLMBackend` — heuristic handler per module |
 | Embeddings | `text-embedding-3-small` | hashed bag-of-words projection |
-| Vector DB | Pinecone | in-memory cosine index over `data/kb/` |
-| Place discovery | Google Places API (New) | JSON sample in `data/seed/` |
+| Vector DB | Pinecone | in-memory cosine index over `data/kb/` (empty by default) |
+| Place discovery | Google Places API (New) | `data/seed/` (empty by default; harvest target) |
 | Travel times | Google Routes API | straight-line estimate per travel mode |
 
 Run the tests the same way:
@@ -158,18 +166,11 @@ prompt. The browser generates it, so the endpoint stays a plain
 
 ## Data provenance — read this before demoing
 
-`data/seed/*.json` and `data/kb/demo-corpus.json` are **offline placeholder data**.
+**This repository ships no accessibility content.** `data/seed/` and `data/kb/`
+are empty. Production discovers real venues through Google Places and reads
+evidence from Pinecone; those are the only sources of record.
 
-- Attraction entries name real institutions, but their accessibility claims are
-  hand-authored and **unverified**.
-- Hotel and restaurant entries are **synthetic** and do not correspond to real
-  businesses.
-- Every KB passage is synthetic demo text. Nothing is quoted or derived from
-  WheelchairTravel.org, TripAdvisor, or any other real source.
-
-Responses generated in offline mode carry a visible *Demo data notice*. In
-production, Google Places discovers real venues and Pinecone supplies the
-separate accessibility evidence.
+To run keyless with real data, harvest it:
 
 ```bash
 python scripts/harvest_osm.py Amsterdam Barcelona Berlin --limit 60
@@ -178,6 +179,14 @@ python scripts/harvest_osm.py Amsterdam Barcelona Berlin --limit 60
 OpenStreetMap is the best keyless source here — `wheelchair=yes|limited|no`,
 `toilets:wheelchair` and `tactile_paving` are structured tags on real venues,
 and absent tags become `unknown` rather than a guess.
+
+Any run that falls back to local data carries a visible *Local data notice*, so
+a demo can never quietly pass local content off as a live result.
+
+The test suite keeps its own small catalogue and corpus under
+[`tests/fixtures/`](tests/fixtures/README.md). That content is hand-authored and
+synthetic — it exists so the suite runs without keys or a network, and it is
+never read at runtime.
 
 ---
 
@@ -235,9 +244,11 @@ python scripts/build_architecture_png.py
 
 ## Before submission
 
-- [ ] Fill in `data/team.json` (batch/order number, names, emails) — a test
+- [x] Fill in `data/team.json` (batch/order number, names, emails) — a test
       skips with a reminder while placeholders remain
-- [ ] Replace the demo seed data and KB with harvested/real content
+- [ ] Ingest the real accessibility corpus into Pinecone (`scripts/ingest_kb.py`)
+- [ ] Regenerate the worked example over live providers:
+      `python scripts/build_agent_info_example.py --real`
 - [ ] Set `LLMOD_API_KEY` and confirm a real run stays inside the budget
 - [ ] Confirm the deployed URL serves the GUI at `/` with no login
 - [ ] Submit the Vercel URL and the GitHub repo URL

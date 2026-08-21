@@ -3,8 +3,13 @@
 Caching them means /api/agent_info is a file read rather than an agent run, so
 documenting the agent never spends the project's token budget.
 
-    python scripts/build_agent_info_example.py           # offline fake backend
-    python scripts/build_agent_info_example.py --real    # real LLM (costs money)
+    python scripts/build_agent_info_example.py           # keyless, over the test fixtures
+    python scripts/build_agent_info_example.py --real    # real backends (costs money)
+
+`data/` ships no place catalogue or knowledge base, so the keyless mode reads
+the test fixtures and stamps the result as fixture-derived. Run `--real` with
+Google Places, Pinecone and LLMod configured before submitting, so
+/api/agent_info shows a trace over real data rather than test content.
 """
 
 from __future__ import annotations
@@ -30,13 +35,20 @@ def main() -> int:
 
     cfg = settings(refresh=True)
     if not args.real:
+        # There is no bundled catalogue to fall back on any more, so a keyless
+        # run reads the test fixtures. Stated plainly rather than passed off
+        # as a real trace.
+        fixtures = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
         cfg = replace(
             cfg,
             llm_backend="fake",
             embedding_backend="fake",
             vector_backend="memory",
             repository_backend="local",
+            seed_dir=str(fixtures / "seed"),
+            kb_dir=str(fixtures / "kb"),
         )
+        print("Keyless run: reading tests/fixtures/. Use --real before submitting.")
 
     print(f"Generating with backends: {cfg.backend_summary()}")
 
@@ -59,9 +71,12 @@ def main() -> int:
         json.dumps(
             {
                 "_generated_with": cfg.backend_summary(),
+                "_data_source": "real providers" if args.real else "tests/fixtures",
                 "_note": (
                     "Regenerate with scripts/build_agent_info_example.py whenever prompts or "
-                    "module names change, so /api/agent_info never shows a stale trace."
+                    "module names change, so /api/agent_info never shows a stale trace. "
+                    "Pass --real so the example runs over live providers instead of the "
+                    "test fixtures."
                 ),
                 "prompt_examples": examples,
             },

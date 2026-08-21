@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from .config import KB_DIR, Settings
@@ -76,8 +77,9 @@ class InMemoryVectorStore:
 
     name = "memory"
 
-    def __init__(self, embedder: Embedder):
+    def __init__(self, embedder: Embedder, kb_dir=KB_DIR):
         self._embedder = embedder
+        self._kb_dir = Path(kb_dir)
         self._records: list[VectorRecord] = []
         self._loaded = False
 
@@ -94,15 +96,21 @@ class InMemoryVectorStore:
         return len(records)
 
     def load_local_kb(self) -> int:
-        """Read data/kb/*.json once, lazily, on first query."""
+        """Read the knowledge-base directory once, lazily, on first query.
+
+        Empty in a normal checkout. Passages are ingested from real sources,
+        not shipped by this repository, so an empty directory means every
+        verdict comes back `unknown` -- which is the honest answer when there
+        is no evidence, and exactly what this system promises to say.
+        """
         if self._loaded:
             return len(self._records)
         self._loaded = True
-        if not KB_DIR.exists():
+        if not self._kb_dir.exists():
             return 0
 
         records: list[VectorRecord] = []
-        for path in sorted(KB_DIR.glob("*.json")):
+        for path in sorted(self._kb_dir.glob("*.json")):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
@@ -214,4 +222,4 @@ class PineconeVectorStore:
 def build_vector_store(settings: Settings, embedder: Embedder) -> VectorStore:
     if settings.vector_backend == "pinecone":
         return PineconeVectorStore(settings)
-    return InMemoryVectorStore(embedder)
+    return InMemoryVectorStore(embedder, settings.kb_dir)

@@ -33,9 +33,10 @@ LEGEND = (
 def _demo_data_warning(settings: Settings) -> str | None:
     if settings.vector_backend == "memory" or settings.repository_backend == "local":
         return (
-            "> **Demo data notice.** This run used the bundled offline catalogue and the synthetic "
-            "demo knowledge base, not live sources. Treat every accessibility statement here as "
-            "illustrative only."
+            "> **Local data notice.** This run did not use the live providers. Places came from "
+            "the local catalogue and accessibility evidence from the local knowledge base, "
+            "whichever of those is configured. Treat every accessibility statement here as "
+            "illustrative until it is reproduced against Google Places and Pinecone."
         )
     return None
 

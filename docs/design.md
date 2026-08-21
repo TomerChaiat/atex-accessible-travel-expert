@@ -239,16 +239,25 @@ stdlib `urllib`. Porting the same functions into a `StateGraph` is mechanical.
 
 ## Data provenance
 
-The catalogue and knowledge base committed to this repository are **placeholders**
-and are labelled as such in the files, in the API, and in every generated
-response. Attraction entries name real institutions but carry unverified claims;
-hotel and restaurant entries are synthetic; no passage is quoted from any real
-accessibility publication.
+Nothing is committed. `data/seed/` and `data/kb/` ship empty, and the product
+holds no place catalogue and no accessibility evidence of its own.
+
+This is the provenance rule taken to its conclusion. A repository that ships
+hand-authored accessibility claims has, by construction, a path where invented
+content reaches a traveller — a demo left running, a fallback that fires in
+production, a placeholder nobody replaced. Removing the content removes the
+path. Keyless, place search returns nothing and every verdict is `unverified`,
+which is exactly what this system promises to say when it does not know.
 
 Each knowledge-base chunk records `source`, `source_url`, `provenance` and
-`retrieved_at`, so the distinction between real and demo content survives
-ingestion instead of being lost at the boundary. See the README for how to replace
-the placeholders with harvested data.
+`retrieved_at`, so the distinction between real and placeholder content survives
+ingestion instead of being lost at the boundary. `scripts/harvest_osm.py` pulls
+real OpenStreetMap tags into `data/seed/` without an API key.
+
+The test suite keeps a small hand-authored catalogue and corpus under
+`tests/fixtures/`, pointed at by `ATEX_SEED_DIR` and `ATEX_KB_DIR`. Scoping it
+to the tests is what makes it safe: it buys a keyless, deterministic, offline
+suite, and it cannot reach a runtime code path.
 
 ---
 

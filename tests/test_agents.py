@@ -6,6 +6,7 @@ allowed to reach the traveller.
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -13,6 +14,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# The place catalogue and knowledge base under tests/fixtures/ exist only for
+# these tests. They are deliberately not shipped in data/: the product does not
+# invent accessibility content. Pointing the keyless backends here keeps the
+# suite deterministic with no API keys and no network. Set before importing
+# atex, because settings read the environment at call time.
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+FIXTURE_SEED = FIXTURES / "seed"
+FIXTURE_KB = FIXTURES / "kb"
+os.environ["ATEX_SEED_DIR"] = str(FIXTURE_SEED)
+os.environ["ATEX_KB_DIR"] = str(FIXTURE_KB)
 
 from atex.agents.accessibility_validator import (  # noqa: E402
     _candidate_excerpt,
@@ -796,7 +808,7 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
 
 class TestTools(unittest.TestCase):
     def setUp(self):
-        self.repo = LocalRepository()
+        self.repo = LocalRepository(FIXTURE_SEED)
         self.tools = build_toolset(self.repo, ["step_free_entrance"], 6)
 
     def test_search_returns_briefs_not_full_records(self):
@@ -880,7 +892,7 @@ class TestTravelEstimates(unittest.TestCase):
         self.assertEqual(haversine_km(52.0, 4.0, 52.0, 4.0), 0.0)
 
     def test_walking_is_slower_than_transit(self):
-        repo = LocalRepository()
+        repo = LocalRepository(FIXTURE_SEED)
         a = repo.get_place("ams-rijksmuseum")
         b = repo.get_place("ams-nemo-science-museum")
         walk = travel_estimate(a, b, "wheelchair_walk")
@@ -888,7 +900,7 @@ class TestTravelEstimates(unittest.TestCase):
         self.assertGreater(walk["duration_min"], transit["duration_min"])
 
     def test_estimate_is_labelled_as_an_estimate(self):
-        repo = LocalRepository()
+        repo = LocalRepository(FIXTURE_SEED)
         estimate = travel_estimate(
             repo.get_place("ams-rijksmuseum"), repo.get_place("ams-vondelpark")
         )
@@ -1100,21 +1112,21 @@ class TestRetrievalRecall(unittest.TestCase):
         import json
 
         from atex.agents.accessibility_validator import retrieve_evidence
-        from atex.config import KB_DIR, settings
+        from atex.config import settings
         from atex.context import AgentContext
         from atex.tracing import RunTrace
 
         wanted: dict[str, str] = {}
-        for path in KB_DIR.glob("*.json"):
+        for path in FIXTURE_KB.glob("*.json"):
             for chunk in json.loads(path.read_text(encoding="utf-8")).get("chunks", []):
                 if chunk.get("place_id"):
                     wanted.setdefault(chunk["place_id"], chunk.get("city") or "")
 
-        self.assertTrue(wanted, "no place-specific chunks found in data/kb/")
+        self.assertTrue(wanted, "no place-specific chunks found in the fixture knowledge base")
 
         cfg = settings()
         ctx = AgentContext.build(RunTrace(budget=cfg.budget), cfg)
-        repo = LocalRepository()
+        repo = LocalRepository(FIXTURE_SEED)
 
         for place_id, city in wanted.items():
             with self.subTest(place=place_id):
@@ -1134,7 +1146,7 @@ class TestRetrievalRecall(unittest.TestCase):
 
         cfg = settings()
         ctx = AgentContext.build(RunTrace(budget=cfg.budget), cfg)
-        repo = LocalRepository()
+        repo = LocalRepository(FIXTURE_SEED)
 
         # This place deliberately has no chunk of its own.
         place = repo.get_place("ams-cafe-centrum")

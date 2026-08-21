@@ -8,18 +8,22 @@ deployment see the [README](README.md).
 
 ## Data quality
 
-The committed catalogue and knowledge base are labelled placeholders. Replacing
-them is the single biggest improvement available:
+`data/seed/` and `data/kb/` are empty: the repository ships no catalogue and no
+accessibility evidence. Filling them with *real* content is the single biggest
+improvement available:
 
 1. `python scripts/harvest_osm.py Amsterdam Barcelona Berlin --limit 60` — real
    OpenStreetMap accessibility tags, no API key needed.
-2. Build a real knowledge base to replace `data/kb/demo-corpus.json`, recording
-   `source_url` and `retrieved_at` for every passage. Candidate sources: venue
-   accessibility pages, OSM `wheelchair:description` free text, municipal open
-   accessibility datasets.
+2. Build a real knowledge base under `data/kb/`, recording `source_url` and
+   `retrieved_at` for every passage. Candidate sources: venue accessibility
+   pages, OSM `wheelchair:description` free text, municipal open accessibility
+   datasets.
 3. Keep `place_id` values aligned between the catalogue and the vector index —
    they are the join key, and a mismatch silently turns every verdict into
    `unknown`.
+4. Do not re-add hand-authored accessibility claims to `data/`. The fixtures
+   under `tests/fixtures/` cover the keyless test suite; anything in `data/`
+   can reach a traveller.
 
 ## Capability
 

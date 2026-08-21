@@ -131,7 +131,14 @@ def _score(place: Place, categories: list[str], needs: list[str]) -> float:
 
 
 class LocalRepository:
-    """Reads data/seed for keyless local development and deterministic tests."""
+    """Reads a directory of harvested place JSON, for keyless operation.
+
+    The directory is empty in a normal checkout. It is the output target of
+    `scripts/harvest_osm.py`, so it holds real OpenStreetMap places once
+    someone harvests them -- not a catalogue this repository invents. With
+    nothing there, searches return no results and say so, which is the honest
+    answer rather than a fabricated one.
+    """
 
     name = "local"
 
@@ -401,7 +408,7 @@ def build_repository(settings: Settings) -> Repository:
         return GooglePlacesRepository(settings)
     if settings.repository_backend == "supabase":
         return SupabaseRepository(settings)
-    return LocalRepository()
+    return LocalRepository(settings.seed_dir)
 
 
 def travel_estimate(a: Place, b: Place, mode: str = "accessible_transit") -> dict[str, Any]:
