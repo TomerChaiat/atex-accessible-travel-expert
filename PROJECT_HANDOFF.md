@@ -50,13 +50,44 @@ The `.env.example` file should exist locally for documentation but remain ignore
 11. Remove rest breaks immediately beside lunch and at the end of a day.
 12. Keep no more than one meaningful explicit rest per day.
 13. Traveller context matters. For example, a venue requiring a helper may be unsuitable for a solo traveller but conditionally supported when the traveller has an appropriate companion.
-14. The user-facing itinerary should show only the distance between consecutive venues, for example: `1.29 km`. Do not show calculated travel time or describe it as an accessible route.
-15. Itinerary times must be arithmetically contiguous. For example:
+14. Travel between consecutive venues must be explained, not just numbered.
+    Name the origin and call the distance an estimate, for example: `The
+    estimated distance from X is about 1.29 km.` The destination is the line
+    directly above, so do not repeat it. Then list the travel modes that suit
+    the traveller, each with a time. Never describe any of it as an accessible
+    route.
+    - Only offer modes the traveller can actually manage. Self-powered travel
+      is capped by profile: 3.0 km powered chair or scooter, 1.5 km manual,
+      0.8 km walker or cane. An accessible taxi is always available, so there
+      is always at least one option.
+    - When the traveller names a preferred way of getting around, show only
+      that one.
+    - Live times come from the Google Routes API; every failure falls back to
+      the local coordinate estimate for that hop. Google's walking time is
+      scaled up for wheelchair and limited-walking travellers, because Routes
+      has no wheelchair mode.
+15. Itinerary times must be arithmetically contiguous, and travel time counts.
+    Each start equals the previous item's end plus the travel shown on the new
+    item's own row. For example:
     - 09:30 activity lasting 90 minutes
     - 11:00 lunch lasting 60 minutes
-    - 12:00 next activity
+    - 12:00 plus 20 minutes of travel → 12:20 next activity
 
-    Do not insert unexplained hidden gaps.
+    The schedule is laid out on the slowest offered mode, so it holds whichever
+    the traveller picks. Do not insert gaps the itinerary has not explained.
+19. A hotel is never an activity. It belongs in "Where you'll stay", so a trip
+    that keeps one hotel throughout has no hotel row in any day — scheduling
+    it duplicates the section and, with its zero duration, collides with the
+    next item's start time. The one exception is a genuine change of
+    accommodation: a hotel other than the selected one, on a row explicitly
+    marked `kind: "stay"`, is kept as the day the traveller moves in. A move
+    still passes through normal verdict enforcement, so a hotel with
+    accessibility concerns cannot enter the itinerary this way.
+    - Known limitation: `selected_hotel_id` is a single value and the finder
+      returns one hotel, so a multi-hotel trip is not yet plannable
+      end-to-end. The `stay` row is the seam that change would build on.
+20. The GUI must offer a one-click download of the full run logs, covering
+    every turn in the conversation.
 16. Google Place IDs must be copied exactly from provider observations. Invalid, altered, or obsolete IDs should be skipped without crashing the itinerary.
 17. Do not expose Pinecone confidence fields or `classification_version` in the application or UI.
 18. Accessibility evidence explanations should be concise but complete and must not end with a truncated sentence.

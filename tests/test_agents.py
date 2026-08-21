@@ -22,7 +22,11 @@ from atex.agents.accessibility_validator import (  # noqa: E402
 )
 from atex.agents.activity_finder import _finish_selection, _wants_restaurants  # noqa: E402
 from atex.agents.supervisor import _legalize, decide  # noqa: E402
-from atex.agents.schedule_planner import _enforce_verdicts, _flagged_reason  # noqa: E402
+from atex.agents.schedule_planner import (  # noqa: E402
+    _enforce_verdicts,
+    _flagged_reason,
+    _parse_time,
+)
 from atex.agents.user_profile import normalize_profile  # noqa: E402
 from atex.config import load_settings  # noqa: E402
 from atex.graph import run_agent  # noqa: E402
@@ -34,6 +38,15 @@ from atex.repository import (  # noqa: E402
     travel_estimate,
 )
 from atex.render import render_itinerary  # noqa: E402
+from atex.routing import (  # noqa: E402
+    DETOUR_FACTOR,
+    GoogleRoutesRouter,
+    LocalRouter,
+    build_router,
+    describe_options,
+    planning_option,
+    self_powered_limit_km,
+)
 from atex.state import Candidate, RunState  # noqa: E402
 from atex.tools import ToolError, build_toolset  # noqa: E402
 from atex.tracing import RunTrace  # noqa: E402
@@ -68,6 +81,27 @@ class TestProfileNormalisation(unittest.TestCase):
         profile = normalize_profile({"trip_days": "banana", "interests": None})
         self.assertIsInstance(profile["trip_days"], int)
         self.assertEqual(profile["interests"], [])
+
+    def test_a_wheelchair_implies_limited_walking(self):
+        profile = normalize_profile({"mobility": {"wheelchair": "manual"}})
+        self.assertTrue(profile["mobility"]["walking_limited"])
+
+    def test_a_stated_walking_limit_survives_without_a_wheelchair(self):
+        profile = normalize_profile(
+            {"mobility": {"wheelchair": "none", "walking_limited": True}}
+        )
+        self.assertTrue(profile["mobility"]["walking_limited"])
+
+    def test_no_stated_transport_preference_leaves_the_choice_open(self):
+        self.assertIsNone(normalize_profile({})["preferred_transport"])
+
+    def test_an_invented_transport_mode_is_discarded(self):
+        profile = normalize_profile({"preferred_transport": "helicopter"})
+        self.assertIsNone(profile["preferred_transport"])
+
+    def test_a_real_transport_preference_is_kept(self):
+        profile = normalize_profile({"preferred_transport": "accessible_taxi"})
+        self.assertEqual(profile["preferred_transport"], "accessible_taxi")
 
     def test_group_size_is_preserved_for_conditional_access(self):
         profile = normalize_profile({"party_size": 4})
@@ -471,19 +505,150 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
             [{"from": "p1", "to": "p3", "min": 14, "km": 1.5}],
         )
         destination = itinerary["days"][0]["items"][2]
-        self.assertEqual(destination["travel_from_previous"], {"min": 14, "km": 1.5})
+        travel = destination["travel_from_previous"]
+        self.assertEqual(travel["km"], 1.5)
+        self.assertEqual(travel["min"], 14)
+        self.assertEqual(travel["from_name"], "Unknown Place")
+
+        # 09:30 + 90 = 11:00 lunch, + 60 = 12:00, + 14 minutes of travel.
         self.assertEqual(
             [item["time"] for item in itinerary["days"][0]["items"]],
-            ["09:30", "11:00", "12:00"],
+            ["09:30", "11:00", "12:14"],
         )
 
         state.profile = {"destination": "Test City", "trip_days": 1}
         state.itinerary = itinerary
         settings = load_settings()
         rendered = render_itinerary(state, RunTrace(settings.budget), settings)
-        self.assertIn("1.5 km", rendered)
-        self.assertNotIn("14 min", rendered)
+        # The destination is the line directly above, so it is not repeated.
+        self.assertIn(
+            "The estimated distance from Unknown Place is about 1.5 km.", rendered
+        )
+        self.assertNotIn("to Second Place is about", rendered)
+        self.assertIn("The schedule allows 14 min.", rendered)
         self.assertNotIn("accessible route", rendered.lower())
+
+    def test_the_hotel_is_never_scheduled_as_an_activity(self):
+        # The hotel has its own section. Scheduling it duplicates the venue,
+        # and its zero duration collides with the next item's start time.
+        state = self._state()
+        state.selected_hotel_id = "hotel-1"
+        state.candidates["hotel-1"] = Candidate(
+            "hotel-1", "Hotel De Hallen", "hotel", {}, verdict="unknown"
+        )
+        state.candidates["museum"] = Candidate(
+            "museum", "Museum Het Schip", "activity", {}, verdict="unknown"
+        )
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": [
+                {
+                    "time": "09:00", "duration_min": 0,
+                    "place_id": "hotel-1", "name": "Hotel De Hallen", "kind": "activity",
+                },
+                {
+                    "time": "09:00", "duration_min": 90,
+                    "place_id": "museum", "name": "Museum Het Schip", "kind": "activity",
+                },
+            ]}],
+        })
+        items = itinerary["days"][0]["items"]
+        self.assertEqual([item["place_id"] for item in items], ["museum"])
+        self.assertEqual(items[0]["time"], "09:00")
+
+    def _two_hotels(self):
+        state = self._state()
+        state.selected_hotel_id = "hotel-1"
+        state.candidates["hotel-1"] = Candidate(
+            "hotel-1", "First Hotel", "hotel", {}, verdict="supported"
+        )
+        state.candidates["hotel-2"] = Candidate(
+            "hotel-2", "Second Hotel", "hotel", {}, verdict="supported"
+        )
+        return state
+
+    def test_moving_to_a_different_hotel_is_kept_as_a_stay(self):
+        # A trip that changes accommodation has to show the move somewhere.
+        state = self._two_hotels()
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 2, "items": [
+                {
+                    "time": "09:00", "duration_min": 0,
+                    "place_id": "hotel-2", "name": "Second Hotel", "kind": "stay",
+                },
+                {
+                    "time": "09:00", "duration_min": 90,
+                    "place_id": "p1", "name": "Unknown Place", "kind": "activity",
+                },
+            ]}],
+        })
+        items = itinerary["days"][0]["items"]
+        self.assertEqual([item["place_id"] for item in items], ["hotel-2", "p1"])
+        self.assertEqual(items[0]["accessibility"], "supported")
+        # A zero-duration stay must not collide with what follows it.
+        self.assertNotEqual(items[0]["time"], items[1]["time"])
+
+    def test_a_stay_row_for_the_hotel_already_booked_is_still_dropped(self):
+        state = self._two_hotels()
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": [
+                {"place_id": "hotel-1", "name": "First Hotel", "kind": "stay"},
+                {"place_id": "p1", "name": "Unknown Place", "kind": "activity"},
+            ]}],
+        })
+        items = itinerary["days"][0]["items"]
+        self.assertEqual([item["place_id"] for item in items], ["p1"])
+
+    def test_a_second_hotel_with_concerns_cannot_enter_as_a_stay(self):
+        state = self._two_hotels()
+        state.candidates["hotel-2"].verdict = "flagged"
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 2, "items": [
+                {"place_id": "hotel-2", "name": "Second Hotel", "kind": "stay"},
+                {"place_id": "p1", "name": "Unknown Place", "kind": "activity"},
+            ]}],
+        })
+        items = itinerary["days"][0]["items"]
+        self.assertEqual([item["place_id"] for item in items], ["p1"])
+        self.assertIn(
+            "hotel-2", {entry["place_id"] for entry in itinerary["not_scheduled"]}
+        )
+
+    def test_travel_time_between_venues_moves_the_next_start(self):
+        state = self._state()
+        state.profile = {"mobility": {"wheelchair": "manual"}}
+        state.candidates["p3"] = Candidate(
+            "p3", "Second Place", "activity", {}, verdict="supported"
+        )
+        places = {
+            "p1": SimpleNamespace(id="p1", lat=52.0, lon=4.0),
+            "p3": SimpleNamespace(id="p3", lat=52.009, lon=4.0),
+        }
+        itinerary = _enforce_verdicts(
+            state,
+            {
+                "days": [{"day": 1, "items": [
+                    {
+                        "time": "09:00", "duration_min": 90,
+                        "place_id": "p1", "name": "Unknown Place", "kind": "activity",
+                    },
+                    {
+                        "time": "10:30", "duration_min": 90,
+                        "place_id": "p3", "name": "Second Place", "kind": "activity",
+                    },
+                ]}],
+            },
+            router=LocalRouter(),
+            places=places,
+        )
+        items = itinerary["days"][0]["items"]
+        travel = items[1]["travel_from_previous"]
+        self.assertGreater(len(travel["options"]), 1)
+        self.assertEqual(travel["min"], max(o["minutes"] for o in travel["options"]))
+
+        # The planner said 10:30; the walk between them pushes it later, and
+        # the itinerary shows exactly how much later.
+        self.assertEqual(items[0]["time"], "09:00")
+        self.assertEqual(_parse_time(items[1]["time"]), 10 * 60 + 30 + travel["min"])
 
     def test_generic_rows_cannot_borrow_candidate_verdicts(self):
         state = self._state()
@@ -660,6 +825,146 @@ class TestTravelEstimates(unittest.TestCase):
             repo.get_place("ams-rijksmuseum"), repo.get_place("ams-vondelpark")
         )
         self.assertIn("estimate", estimate["basis"])
+
+
+class TestTravelOptions(unittest.TestCase):
+    """Which ways of getting around are worth offering, and how long they take.
+
+    The rule that matters: never suggest a journey the traveller's mobility
+    cannot actually make.
+    """
+
+    @staticmethod
+    def _pair(km: float):
+        """Two places roughly `km` apart, allowing for the detour factor."""
+        degrees = (km / DETOUR_FACTOR) / 111.0
+        return (
+            SimpleNamespace(id="a", lat=52.0, lon=4.0),
+            SimpleNamespace(id="b", lat=52.0 + degrees, lon=4.0),
+        )
+
+    @staticmethod
+    def _profile(wheelchair="none", walking_limited=False, preferred=None):
+        return {
+            "mobility": {"wheelchair": wheelchair, "walking_limited": walking_limited},
+            "preferred_transport": preferred,
+        }
+
+    def _modes(self, km, profile):
+        origin, destination = self._pair(km)
+        return [o["mode"] for o in LocalRouter().options(origin, destination, profile)]
+
+    def test_long_hop_is_never_offered_on_foot_to_a_wheelchair_user(self):
+        modes = self._modes(5.0, self._profile("manual"))
+        self.assertNotIn("wheelchair_walk", modes)
+        self.assertIn("accessible_transit", modes)
+
+    def test_short_hop_is_offered_on_foot(self):
+        self.assertIn("wheelchair_walk", self._modes(0.6, self._profile("manual")))
+
+    def test_powered_chair_covers_more_ground_than_a_manual_one(self):
+        self.assertGreater(
+            self_powered_limit_km(self._profile("powered")),
+            self_powered_limit_km(self._profile("manual")),
+        )
+
+    def test_a_walker_gets_the_shortest_self_powered_range(self):
+        self.assertLess(
+            self_powered_limit_km(self._profile("none", walking_limited=True)),
+            self_powered_limit_km(self._profile("none")),
+        )
+
+    def test_there_is_always_at_least_one_way_to_get_there(self):
+        # A taxi covers any distance, so the traveller is never left stranded.
+        for km in (0.05, 1.0, 25.0):
+            modes = self._modes(km, self._profile("manual", walking_limited=True))
+            self.assertTrue(modes)
+            self.assertIn("accessible_taxi", modes)
+
+    def test_a_stated_preference_replaces_the_choice(self):
+        modes = self._modes(1.0, self._profile("manual", preferred="accessible_taxi"))
+        self.assertEqual(modes, ["accessible_taxi"])
+
+    def test_transit_is_not_offered_for_a_few_hundred_metres(self):
+        self.assertNotIn("accessible_transit", self._modes(0.2, self._profile()))
+
+    def test_the_schedule_is_built_on_the_slowest_option(self):
+        chosen = planning_option(
+            [
+                {"mode": "accessible_taxi", "minutes": 7},
+                {"mode": "wheelchair_walk", "minutes": 20},
+                {"mode": "accessible_transit", "minutes": 15},
+            ]
+        )
+        self.assertEqual(chosen["mode"], "wheelchair_walk")
+
+    def test_every_option_carries_a_time_and_a_readable_label(self):
+        origin, destination = self._pair(1.0)
+        options = LocalRouter().options(origin, destination, self._profile("manual"))
+        for option in options:
+            self.assertGreater(option["minutes"], 0)
+            self.assertTrue(option["label"])
+        self.assertIn("~", describe_options(options))
+
+
+class TestGoogleRoutesRouter(unittest.TestCase):
+    ORIGIN = SimpleNamespace(id="a", lat=52.0, lon=4.0)
+    DESTINATION = SimpleNamespace(id="b", lat=52.01, lon=4.0)
+
+    def test_live_durations_replace_the_estimate(self):
+        payload = {"routes": [{"duration": "780s", "distanceMeters": 1400}]}
+        with patch("atex.routing.post_json", return_value=payload):
+            options = GoogleRoutesRouter("key").options(
+                self.ORIGIN, self.DESTINATION, {"preferred_transport": "accessible_taxi"}
+            )
+        self.assertEqual(len(options), 1)
+        self.assertEqual(options[0]["source"], "google")
+        self.assertEqual(options[0]["km"], 1.4)
+        self.assertEqual(options[0]["minutes"], 15)
+
+    def test_a_provider_failure_falls_back_to_the_estimate(self):
+        with patch("atex.routing.post_json", side_effect=HttpError(403, "denied", "u")):
+            options = GoogleRoutesRouter("key").options(
+                self.ORIGIN, self.DESTINATION, {"preferred_transport": "accessible_taxi"}
+            )
+        self.assertEqual(len(options), 1)
+        self.assertEqual(options[0]["source"], "estimate")
+        self.assertGreater(options[0]["minutes"], 0)
+
+    def test_a_route_google_cannot_find_falls_back_to_the_estimate(self):
+        # No transit in this city, for example: `routes` comes back empty.
+        with patch("atex.routing.post_json", return_value={"routes": []}):
+            options = GoogleRoutesRouter("key").options(
+                self.ORIGIN, self.DESTINATION, {"preferred_transport": "accessible_transit"}
+            )
+        self.assertEqual(options[0]["source"], "estimate")
+
+    def test_googles_walking_time_is_slowed_for_a_wheelchair_user(self):
+        payload = {"routes": [{"duration": "600s", "distanceMeters": 800}]}
+        profile = {
+            "mobility": {"wheelchair": "manual"},
+            "preferred_transport": "wheelchair_walk",
+        }
+        able = {"mobility": {"wheelchair": "none"}, "preferred_transport": "wheelchair_walk"}
+        with patch("atex.routing.post_json", return_value=payload):
+            slow = GoogleRoutesRouter("key").options(self.ORIGIN, self.DESTINATION, profile)
+            quick = GoogleRoutesRouter("key").options(self.ORIGIN, self.DESTINATION, able)
+        self.assertGreater(slow[0]["minutes"], quick[0]["minutes"])
+
+    def test_repeated_pairs_are_only_routed_once(self):
+        payload = {"routes": [{"duration": "300s", "distanceMeters": 500}]}
+        profile = {"preferred_transport": "accessible_taxi"}
+        router = GoogleRoutesRouter("key")
+        with patch("atex.routing.post_json", return_value=payload) as call:
+            router.options(self.ORIGIN, self.DESTINATION, profile)
+            router.options(self.ORIGIN, self.DESTINATION, profile)
+        self.assertEqual(call.call_count, 1)
+
+    def test_no_maps_key_selects_the_local_router(self):
+        self.assertIsInstance(build_router(SimpleNamespace(google_maps_api_key="")), LocalRouter)
+        self.assertIsInstance(
+            build_router(SimpleNamespace(google_maps_api_key="k")), GoogleRoutesRouter
+        )
 
 
 class TestJsonExtraction(unittest.TestCase):

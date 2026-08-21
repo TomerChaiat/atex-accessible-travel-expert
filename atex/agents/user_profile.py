@@ -29,6 +29,8 @@ VALID_NEEDS = {
 
 PACE_DEFAULTS = {"relaxed": 2, "moderate": 3, "packed": 4}
 
+VALID_TRANSPORT = {"wheelchair_walk", "accessible_transit", "accessible_taxi"}
+
 
 def _as_int(value: Any, default: int | None = None) -> int | None:
     try:
@@ -59,6 +61,14 @@ def normalize_profile(raw: dict[str, Any]) -> dict[str, Any]:
     trip_days = _as_int(raw.get("trip_days")) or 3
     trip_days = max(1, min(trip_days, 7))  # keeps one run inside the time budget
 
+    # How far the traveller can cover under their own power decides which
+    # travel modes are worth offering at all. A wheelchair already implies a
+    # limit; a walker or cane has to be stated.
+    walking_limited = bool(mobility.get("walking_limited")) or uses_wheelchair
+
+    transport = str(raw.get("preferred_transport") or "").strip().lower()
+    preferred_transport = transport if transport in VALID_TRANSPORT else None
+
     destination = raw.get("destination")
     return {
         "destination": destination.strip() if isinstance(destination, str) else None,
@@ -69,7 +79,9 @@ def normalize_profile(raw: dict[str, Any]) -> dict[str, Any]:
             "wheelchair": wheelchair,
             "step_free_required": bool(mobility.get("step_free_required") or uses_wheelchair),
             "assistant_present": mobility.get("assistant_present"),
+            "walking_limited": walking_limited,
         },
+        "preferred_transport": preferred_transport,
         "sensory": {
             "low_noise": bool(sensory.get("low_noise")),
             "low_crowd": bool(sensory.get("low_crowd")),

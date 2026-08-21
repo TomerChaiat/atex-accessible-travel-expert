@@ -5,7 +5,7 @@ Course project for *AI Agents*.
 
 | Member | GitHub |
 |---|---|
-| Omer | [@omer123124](https://github.com/omer123124) |
+| Omer Yahav | [@omer123124](https://github.com/omer123124) |
 | Liad Livneh | [@LiadLivneh](https://github.com/LiadLivneh) |
 | Tomer Chaiat | [@TomerChaiat](https://github.com/TomerChaiat) |
 

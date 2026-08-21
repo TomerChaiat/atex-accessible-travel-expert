@@ -14,6 +14,7 @@ from .. import SCHEDULE_PLANNER
 from ..context import AgentContext
 from ..prompts import PLANNER_SYSTEM, planner_user_prompt
 from ..repository import RepositoryError
+from ..routing import MODE_LABELS, build_router, planning_option
 from ..state import RunState
 from ..tools import travel_matrix
 from ..util import truncate
@@ -59,6 +60,26 @@ def _canonical_placeholder_id(item: dict[str, Any]) -> str:
     if kind == "transfer":
         return "transfer"
     return "rest-break"
+
+
+def _is_accommodation_change(
+    item: dict[str, Any], state: RunState, candidate: Any
+) -> bool:
+    """True when a hotel row is a genuine move to different accommodation.
+
+    A trip that changes hotel part-way has to show the move somewhere, so one
+    hotel row per move is legitimate. It has to be a deliberate `stay` row for
+    a hotel other than the one already presented under "Where you'll stay" --
+    anything else is the planner duplicating that section.
+
+    A move still goes through the normal verdict enforcement below, so a hotel
+    with known accessibility concerns cannot reach the itinerary this way.
+    """
+    return (
+        candidate.kind == "hotel"
+        and _normalise_label(item.get("kind")) == "stay"
+        and candidate.place_id != state.selected_hotel_id
+    )
 
 
 def _is_meal(item: dict[str, Any] | None) -> bool:
@@ -128,22 +149,49 @@ def _parse_time(value: Any) -> int | None:
 
 
 def _duration(item: dict[str, Any]) -> int:
-    defaults = {"meal": 60, "rest": 30, "transfer": 0}
+    # Checking into a new hotel is a real event in the day, but a short one.
+    defaults = {"meal": 60, "rest": 30, "transfer": 0, "stay": 30}
+    kind = _normalise_label(item.get("kind"))
     try:
         value = int(item.get("duration_min"))
     except (TypeError, ValueError):
-        value = defaults.get(_normalise_label(item.get("kind")), 90)
+        value = defaults.get(kind, 90)
+    # The planner habitually gives accommodation a zero duration, which would
+    # place the next item at the same minute. Only a transfer is genuinely
+    # instantaneous.
+    if value <= 0 and kind != "transfer":
+        value = defaults.get(kind, 90)
     return max(0, value)
 
 
+def _travel_minutes(item: dict[str, Any]) -> int:
+    """Minutes the schedule allows for reaching this item, from its own row."""
+    travel = item.get("travel_from_previous")
+    if not isinstance(travel, dict):
+        return 0
+    try:
+        return max(0, int(travel.get("min") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _align_item_times(items: list[dict[str, Any]]) -> None:
-    """Make every start time equal the previous item's displayed end time."""
+    """Lay out contiguous start times that account for getting between venues.
+
+    Each start equals the previous item's end plus the travel time shown on
+    this item's own row. The traveller can therefore add the numbers up: no
+    gap appears that the itinerary has not already explained.
+
+    Travel must already be attached, so `_attach_travel_options` runs first.
+    """
     if not items:
         return
     cursor = _parse_time(items[0].get("time"))
     if cursor is None:
         cursor = 9 * 60 + 30
-    for item in items:
+    for index, item in enumerate(items):
+        if index:
+            cursor += _travel_minutes(item)
         item["time"] = f"{(cursor // 60) % 24:02d}:{cursor % 60:02d}"
         cursor += _duration(item)
 
@@ -161,27 +209,77 @@ def _travel_lookup(matrix: list[dict[str, Any]] | None) -> dict[tuple[str, str],
     return lookup
 
 
-def _attach_travel_estimates(
+def _matrix_options(estimate: dict[str, Any]) -> list[dict[str, Any]]:
+    """Rebuild a single travel option from a precomputed matrix row.
+
+    Used when the routing provider has no coordinates to work from, so the
+    itinerary still says how long the hop takes instead of going silent.
+    """
+    try:
+        minutes = int(estimate.get("min") or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    if minutes <= 0:
+        return []
+    return [
+        {
+            "mode": "accessible_transit",
+            "label": MODE_LABELS["accessible_transit"],
+            "km": estimate.get("km"),
+            "minutes": minutes,
+            "source": "estimate",
+        }
+    ]
+
+
+def _attach_travel_options(
     state: RunState,
     items: list[dict[str, Any]],
     lookup: dict[tuple[str, str], dict[str, Any]],
+    router: Any = None,
+    places: dict[str, Any] | None = None,
+    profile: dict[str, Any] | None = None,
 ) -> bool:
-    """Attach pairwise estimates between consecutive real scheduled venues."""
+    """Attach per-mode travel options between consecutive real scheduled venues.
+
+    The traveller sees every way of making the hop that suits their mobility,
+    with a time for each. The schedule itself is laid out on the slowest of
+    them, so the plan holds however they choose to travel.
+    """
+    places = places or {}
     previous_place_id: str | None = None
+    previous_name: str = ""
     attached = False
+
     for item in items:
         place_id = str(item.get("place_id") or "")
         if place_id not in state.candidates:
             continue
+        name = str(item.get("name") or state.candidates[place_id].name)
+
         if previous_place_id and previous_place_id != place_id:
-            estimate = lookup.get(tuple(sorted((previous_place_id, place_id))))
-            if estimate is not None:
+            options: list[dict[str, Any]] = []
+            origin, destination = places.get(previous_place_id), places.get(place_id)
+            if router is not None and origin is not None and destination is not None:
+                options = router.options(origin, destination, profile)
+            if not options:
+                estimate = lookup.get(tuple(sorted((previous_place_id, place_id))))
+                if estimate is not None:
+                    options = _matrix_options(estimate)
+
+            chosen = planning_option(options)
+            if chosen is not None:
                 item["travel_from_previous"] = {
-                    "min": estimate.get("min"),
-                    "km": estimate.get("km"),
+                    "from_place_id": previous_place_id,
+                    "from_name": previous_name,
+                    "km": chosen.get("km"),
+                    "min": chosen.get("minutes"),
+                    "options": options,
                 }
                 attached = True
+
         previous_place_id = place_id
+        previous_name = name
     return attached
 
 
@@ -223,9 +321,12 @@ def _enforce_verdicts(
     state: RunState,
     itinerary: dict[str, Any],
     travel_estimates: list[dict[str, Any]] | None = None,
+    router: Any = None,
+    places: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     scheduled_non_ok: list[tuple[str, str, str]] = []
     matrix_lookup = _travel_lookup(travel_estimates)
+    profile = state.profile or {}
 
     days = itinerary.get("days")
     if not isinstance(days, list):
@@ -248,6 +349,17 @@ def _enforce_verdicts(
                 # claim. Also detach any candidate ID the model borrowed.
                 item["place_id"] = _canonical_placeholder_id(item)
                 item["accessibility"] = "n/a"
+            elif (
+                candidate is not None
+                and candidate.kind == "hotel"
+                and not _is_accommodation_change(item, state, candidate)
+            ):
+                # The hotel is where the traveller sleeps, not a stop on the
+                # tour. It has its own "Where you'll stay" section, so putting
+                # it in a day both duplicates it and -- with the zero duration
+                # the planner gives it -- collides with the next item's start.
+                state.log(f"SchedulePlanner: dropped hotel row {candidate.name}")
+                continue
             elif candidate is not None:
                 verdict = candidate.verdict or "unknown"
                 if verdict == "flagged":
@@ -276,8 +388,11 @@ def _enforce_verdicts(
                 item["accessibility"] = "unknown"
             clean_items.append(item)
         clean_items = _compact_breaks(clean_items)
+        # Travel first: the times below are laid out around it.
+        _attach_travel_options(
+            state, clean_items, matrix_lookup, router, places, profile
+        )
         _align_item_times(clean_items)
-        _attach_travel_estimates(state, clean_items, matrix_lookup)
         day["items"] = clean_items
         day["day"] = day.get("day") or index
         clean_days.append(day)
@@ -388,7 +503,12 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
         # Candidate briefs remain enough to build an itinerary. A temporary
         # details outage should only remove the optional travel matrix.
         state.log(f"SchedulePlanner: place details unavailable: {exc}")
+    # The matrix is the cheap local estimate, and it exists only so the planner
+    # can group each day geographically. The per-mode options the traveller
+    # actually reads are routed afterwards, for the handful of pairs that made
+    # it into the plan.
     matrix = travel_matrix(places)
+    places_by_id = {place.id: place for place in places}
 
     result = ctx.llm.complete_json(
         SCHEDULE_PLANNER,
@@ -402,6 +522,12 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
         max_tokens=2000,
     )
 
-    state.itinerary = _enforce_verdicts(state, result, matrix)
+    state.itinerary = _enforce_verdicts(
+        state,
+        result,
+        matrix,
+        router=build_router(ctx.settings),
+        places=places_by_id,
+    )
     day_count = len(state.itinerary.get("days", []))
     state.log(f"SchedulePlanner: produced a {day_count}-day itinerary")

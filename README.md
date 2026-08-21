@@ -16,8 +16,6 @@ Built by [@omer123124](https://github.com/omer123124),
 
 ---
 
-## Run it right now (no API keys, no installs)
-
 ```bash
 python scripts/devserver.py
 ```
@@ -32,6 +30,7 @@ implementation when its credentials are absent.
 | Embeddings | `text-embedding-3-small` | hashed bag-of-words projection |
 | Vector DB | Pinecone | in-memory cosine index over `data/kb/` |
 | Place discovery | Google Places API (New) | JSON sample in `data/seed/` |
+| Travel times | Google Routes API | straight-line estimate per travel mode |
 
 Run the tests the same way:
 
@@ -199,7 +198,9 @@ PINECONE_NAMESPACE
 GOOGLE_MAPS_API_KEY
 ```
 
-Enable **Places API (New)** in the Google Cloud project. The Google integration
+Enable **Places API (New)** and **Routes API** in the Google Cloud project —
+both use `GOOGLE_MAPS_API_KEY`. Routes is optional: without it, every travel
+time falls back to the local estimate and nothing else changes. The Google integration
 discovers hotels as places; it does not return bookable room inventory or live
 rates. A Booking.com Demand API partner integration would be a separate data
 source and credential.
@@ -209,7 +210,7 @@ source and credential.
 ## Setting up the real services
 
 ```bash
-# 1. Google Cloud: enable Places API (New) and create GOOGLE_MAPS_API_KEY
+# 1. Google Cloud: enable Places API (New) + Routes API, create GOOGLE_MAPS_API_KEY
 
 # 2. Pinecone: create an index with dimension 1536, metric cosine, then
 python scripts/ingest_kb.py

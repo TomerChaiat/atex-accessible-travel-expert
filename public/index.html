@@ -102,6 +102,8 @@
     <div class="row">
       <button id="run" class="primary">Run Agent</button>
       <button id="reset" title="Forget the conversation and start fresh">New conversation</button>
+      <button id="dl-json" disabled title="Every prompt, response and diagnostic from this conversation, as one JSON file">Download logs (JSON)</button>
+      <button id="dl-text" disabled title="The same trace as readable text, one section per LLM call">Download logs (text)</button>
       <span id="status" class="status"></span>
     </div>
     <div class="examples" id="examples"></div>
@@ -132,10 +134,17 @@
     prompt: document.getElementById("prompt"),
     run: document.getElementById("run"),
     reset: document.getElementById("reset"),
+    dlJson: document.getElementById("dl-json"),
+    dlText: document.getElementById("dl-text"),
     status: document.getElementById("status"),
     examples: document.getElementById("examples"),
     conversation: document.getElementById("conversation")
   };
+
+  // Every turn of this conversation, kept so the whole trace can be exported
+  // in one click. The trace already arrives complete from /api/execute; the
+  // browser only has to hold on to it.
+  var TURNS = [];
 
   // The session id lives in the browser, which keeps POST /api/execute a plain
   // {"prompt": "..."} contract for anyone calling it directly.
@@ -228,6 +237,14 @@
   }
 
   function addTurn(promptText, data) {
+    TURNS.push({
+      turn: TURNS.length + 1,
+      asked_at: new Date().toISOString(),
+      prompt: promptText,
+      data: data
+    });
+    refreshExportButtons();
+
     var turn = document.createElement("div");
     turn.className = "turn";
 
@@ -297,6 +314,92 @@
     els.conversation.insertBefore(turn, els.conversation.firstChild);
   }
 
+  // ------------------------------------------------------------- log export
+
+  function stamp() {
+    return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  }
+
+  function download(filename, text, mime) {
+    var blob = new Blob([text], { type: mime + ";charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Revoking immediately can cancel the download in some browsers.
+    setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+  }
+
+  function logBundle() {
+    return {
+      exported_at: new Date().toISOString(),
+      session_id: localStorage.getItem("atex_session"),
+      turn_count: TURNS.length,
+      turns: TURNS
+    };
+  }
+
+  // Mirrors the per-call layout used when these traces are filed by hand:
+  // one numbered section per LLM call, each with its three parts.
+  function logText() {
+    var out = [];
+    out.push("ATEX execution log");
+    out.push("Exported: " + new Date().toISOString());
+    out.push("Session:  " + (localStorage.getItem("atex_session") || "(none)"));
+    out.push("Turns:    " + TURNS.length);
+
+    TURNS.forEach(function (turn, ti) {
+      out.push("");
+      out.push("################################################################");
+      out.push("# Turn " + (ti + 1) + "  (" + turn.asked_at + ")");
+      out.push("################################################################");
+      out.push("");
+      out.push("Your request");
+      out.push(turn.prompt);
+
+      var d = turn.data || {};
+      if (d._diagnostics && d._diagnostics.usage) {
+        out.push("");
+        out.push("Usage");
+        out.push(pretty(d._diagnostics.usage));
+      }
+
+      (d.steps || []).forEach(function (st, i) {
+        var p = st.prompt || {};
+        out.push("");
+        out.push("=== " + (i + 1) + " " + (st.module || "(module)") + " ===");
+        out.push("");
+        out.push("System prompt");
+        out.push(p.system_prompt || p.System_prompt || "");
+        out.push("User prompt");
+        out.push(p.user_prompt || p.User_prompt || "");
+        out.push("Response");
+        out.push(pretty(st.response));
+      });
+
+      if (d._diagnostics && (d._diagnostics.notes || []).length) {
+        out.push("");
+        out.push("=== Guardrail events ===");
+        out.push(d._diagnostics.notes.join("\n"));
+      }
+
+      out.push("");
+      out.push("=== Final response ===");
+      out.push(d.error ? "ERROR: " + d.error : (d.response || ""));
+    });
+
+    return out.join("\n");
+  }
+
+  function refreshExportButtons() {
+    var empty = TURNS.length === 0;
+    els.dlJson.disabled = empty;
+    els.dlText.disabled = empty;
+  }
+
   async function run() {
     var text = els.prompt.value.trim();
     if (!text) { els.prompt.focus(); return; }
@@ -335,8 +438,21 @@
   els.reset.onclick = function () {
     localStorage.removeItem("atex_session");
     els.conversation.innerHTML = "";
+    TURNS = [];
+    refreshExportButtons();
     els.status.textContent = "Started a new conversation";
   };
+  els.dlJson.onclick = function () {
+    download(
+      "atex-logs-" + stamp() + ".json",
+      JSON.stringify(logBundle(), null, 2),
+      "application/json"
+    );
+  };
+  els.dlText.onclick = function () {
+    download("atex-logs-" + stamp() + ".txt", logText(), "text/plain");
+  };
+  refreshExportButtons();
   els.prompt.addEventListener("keydown", function (e) {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run();
   });

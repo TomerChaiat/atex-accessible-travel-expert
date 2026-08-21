@@ -58,8 +58,10 @@ Return one JSON object with exactly these keys:
  "party_size": integer|null,
  "mobility": {"wheelchair": "none"|"manual"|"powered"|"scooter"|"unknown",
               "step_free_required": boolean,
-              "assistant_present": boolean|null},
+              "assistant_present": boolean|null,
+              "walking_limited": boolean},
  "sensory": {"low_noise": boolean, "low_crowd": boolean, "autism_friendly": boolean},
+ "preferred_transport": "wheelchair_walk"|"accessible_transit"|"accessible_taxi"|null,
  "pace": "relaxed"|"moderate"|"packed"|null,
  "max_activities_per_day": integer|null,
  "budget_level": "free"|"low"|"mid"|"high"|null,
@@ -71,6 +73,8 @@ Return one JSON object with exactly these keys:
 }
 
 Use null when the request does not say, and never invent a destination. If a manual or powered wheelchair is mentioned, set step_free_required true and include step_free_entrance and accessible_toilet in accessibility_needs.
+Set walking_limited true whenever the traveller uses a wheelchair, walker, rollator, cane or crutches, or says they cannot walk far, tire quickly, or need short distances. This decides how far it is reasonable to suggest they travel under their own power.
+Set preferred_transport only when the traveller names how they want to get around: on foot or self-propelling is wheelchair_walk, buses/trams/metro/trains is accessible_transit, taxis or private cars is accessible_taxi. Leave it null when they do not say, so they are offered the choice.
 Set party_size to 1 when the traveller explicitly says they are alone. Count named companions or group size when present. If they say family or group without a number, use 2 to represent at least one companion. Set assistant_present true only for an explicit caregiver, personal assistant, or companion who will provide assistance; an ordinary group is represented by party_size."""
 
 
@@ -196,7 +200,7 @@ Return one JSON object:
  "days": [
    {"day": 1,
     "theme": "short label",
-    "items": [{"time": "HH:MM", "place_id": str, "name": str, "kind": "activity"|"meal"|"rest"|"transfer",
+    "items": [{"time": "HH:MM", "place_id": str, "name": str, "kind": "activity"|"meal"|"rest"|"transfer"|"stay",
                "duration_min": int, "accessibility": "supported"|"flagged"|"unknown"|"n/a", "note": "at most 20 words"}],
     "day_note": "at most 25 words"}
  ],
@@ -217,7 +221,8 @@ Rules:
 9. When a supported candidate has conditions, state them briefly in that itinerary item's note. Never hide a companion, booking, or assistance requirement.
 10. Put every unknown real venue you scheduled into things_to_confirm. Never add generic meals, rests, transfers, or unscheduled flagged venues there.
 11. If you dropped another candidate, say why in not_scheduled.
-12. Times must be contiguous: each item's start time equals the previous start time plus its duration. Do not add hidden travel, waiting, or slack gaps. Travel estimates are only for geographic ordering."""
+12. Times must be contiguous: each item's start time equals the previous start time plus its duration. Do not add travel, waiting, or slack gaps yourself. Travel time is measured and inserted afterwards by the system, and adding your own would double-count it. Use the travel estimates only to group each day geographically.
+13. A hotel is never an activity. Accommodation is presented in its own section, so a trip that stays in one hotel throughout has no hotel row in any day. The single exception is a genuine change of accommodation: when the traveller moves to a different hotel part-way through, give the new hotel one row on the day they move in, with kind "stay". Never use a "stay" row for the hotel they are already in."""
 
 
 def planner_user_prompt(

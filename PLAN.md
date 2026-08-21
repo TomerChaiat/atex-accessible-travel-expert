@@ -27,9 +27,17 @@ them is the single biggest improvement available:
 - **A live search fallback.** When the catalogue has no entry for a destination,
   `ActivityLogisticsFinder` could fall back to a keyless web search rather than
   returning nothing. Bounded, and only on a miss.
-- **Real routing.** Travel times are currently straight-line estimates scaled by a
-  detour factor and labelled as such. A wheelchair-aware routing API would make
-  the schedule materially more trustworthy.
+- **Wheelchair-aware routing.** Travel times now come from the Google Routes
+  API, with the straight-line estimate as a per-hop fallback. Routes has no
+  wheelchair mode, though, so walking durations are corrected by a flat factor
+  rather than routed over step-free paths. A provider that understands kerbs,
+  steps and lift outages would make the schedule materially more trustworthy.
+- **Multi-hotel trips.** `selected_hotel_id` is a single value and
+  `ActivityLogisticsFinder` returns one hotel, so a trip that changes
+  accommodation cannot be planned end-to-end. `SchedulePlanner` already accepts
+  a `kind: "stay"` row for a hotel other than the selected one, which is the
+  seam to build on: the finder's contract and the "Where you'll stay" section
+  would both need to become lists.
 - **Verdict freshness.** Accessibility information decays. Storing a
   `retrieved_at` per verdict and warning when evidence is old would make staleness
   visible instead of invisible.

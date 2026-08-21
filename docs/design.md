@@ -121,7 +121,45 @@ An unranked top-k search can crowd out a venue's own passages and produce a fals
 regression test asserting that every place with a knowledge-base entry retrieves
 it.
 
-### 4. Token and call efficiency
+### 4. Travel between venues: routed late, and only for what survives
+
+An itinerary that says "3.42 km" and nothing else has told the traveller
+nothing. What they need is how to make the hop and how long it takes — and for
+this audience, *which* ways are even possible.
+
+Two decisions follow.
+
+**Modes are filtered by the profile, not offered blindly.** Suggesting a 5 km
+push to a manual wheelchair user is worse than offering no suggestion, so
+`offered_modes()` drops self-powered travel past a per-profile ceiling: 3.0 km
+for a powered chair or scooter, 1.5 km manual, 0.8 km for a walker or cane.
+An accessible taxi has no ceiling, so there is always at least one answer. When
+the traveller names how they want to get around, that single mode replaces the
+choice.
+
+**Routing happens after planning, not before.** The planner still receives the
+cheap coordinate-only matrix, because all it needs is enough geography to avoid
+zig-zagging. Live routing then runs over the handful of consecutive pairs that
+actually reached the itinerary — a few elements per run instead of a quadratic
+matrix over every candidate the finder looked at, which is the difference
+between cents and dollars on the Google Routes bill.
+
+`GoogleRoutesRouter` degrades per pair and per mode: no key, a disabled API, no
+transit in this city, a quota error or a timeout each fall back to the local
+estimate for that one hop. Losing routing must never lose the trip.
+
+One correction is applied on top of Google's numbers. Routes has no wheelchair
+mode, and its `WALK` duration assumes an able-bodied pedestrian at roughly
+4.8 km/h. Quoting it unadjusted would understate every journey for precisely
+the travellers this system exists to serve, so walking durations are scaled for
+anyone with a wheelchair or a stated walking limit.
+
+The schedule is then laid out on the **slowest** offered option, so the day
+holds together whichever one the traveller picks, and each row states both the
+distance and what the schedule allowed. Times stay addable: no gap appears that
+the itinerary has not already explained.
+
+### 5. Token and call efficiency
 
 | Technique | Effect |
 |---|---|
@@ -134,7 +172,7 @@ it.
 
 A three-day trip costs roughly 12–14 calls and ~15k tokens.
 
-### 5. Guardrails with reserved headroom
+### 6. Guardrails with reserved headroom
 
 Limits on supervisor turns, total calls, tokens and wall-clock live in one
 `Budget` object. Each keeps a **reserve**.
@@ -149,7 +187,7 @@ the candidate count, one place stayed permanently unvalidated and `Supervisor`
 routed back to the validator until it burned every turn. Unchecked places are now
 settled as `unknown`, which both terminates the loop and states the truth.
 
-### 6. Conversation state on a stateless platform
+### 7. Conversation state on a stateless platform
 
 Serverless functions keep nothing between requests, but the response schema is
 fixed to four top-level fields, so a session id cannot be returned in it.
@@ -161,7 +199,7 @@ profile, verdicts, itinerary draft — not a transcript. Verdicts are deliberate
 reused across turns: they cost LLM calls and do not change between them, which
 makes a follow-up turn roughly a fifth the cost of the first.
 
-### 7. Every external service has an offline fallback
+### 8. Every external service has an offline fallback
 
 The LLM, embeddings, vector store and database each resolve to a local
 implementation when credentials are absent. The system runs end-to-end, and the
@@ -171,7 +209,7 @@ This was not a convenience. It let the entire architecture be built and tested
 before any key existed, and it keeps the test suite free to run — no key, no
 quota, no network.
 
-### 8. A hand-rolled orchestrator over a graph framework
+### 9. A hand-rolled orchestrator over a graph framework
 
 Nodes are written in the shape a graph framework expects —
 `(ctx, state, instruction) -> None`, mutating shared state — but the loop driving

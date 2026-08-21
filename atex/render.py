@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from .config import Settings
+from .routing import describe_options
 from .state import RunState
 from .tracing import RunTrace
 
@@ -80,6 +81,44 @@ def _render_hotel(state: RunState) -> str | None:
     return "\n".join(lines)
 
 
+def _render_travel(item: dict[str, Any]) -> list[str]:
+    """Explain the hop to this venue: how far, how, and how long each way takes.
+
+    A bare number tells the traveller nothing. Naming the origin, calling the
+    distance an estimate, and showing what the schedule allows makes the
+    itinerary's arithmetic checkable rather than mysterious. The destination is
+    the line directly above, so repeating it here would only add noise.
+    """
+    travel = item.get("travel_from_previous")
+    if not isinstance(travel, dict):
+        return []
+
+    lines: list[str] = []
+    distance, origin = travel.get("km"), str(travel.get("from_name") or "")
+    if distance is not None:
+        try:
+            distance_text = f"{float(distance):g} km"
+        except (TypeError, ValueError):
+            distance_text = f"{distance} km"
+        if origin:
+            lines.append(
+                f"  - The estimated distance from {origin} is about {distance_text}."
+            )
+        else:
+            lines.append(f"  - Estimated distance: about {distance_text}.")
+
+    options = travel.get("options")
+    if isinstance(options, list) and options:
+        described = describe_options(options)
+        if described:
+            allowed = travel.get("min")
+            sentence = f"  - Getting there: {described}."
+            if allowed:
+                sentence += f" The schedule allows {allowed} min."
+            lines.append(sentence)
+    return lines
+
+
 def render_clarification(state: RunState) -> str:
     question = state.clarification_question or "Could you tell me a little more about your trip?"
     lines = ["I need one more detail before I can plan this trip.", "", f"**{question}**"]
@@ -137,14 +176,7 @@ def render_itinerary(state: RunState, trace: RunTrace, settings: Settings) -> st
             if mark:
                 line += f" {mark}"
             parts.append(line)
-            travel = item.get("travel_from_previous")
-            if isinstance(travel, dict) and travel.get("km") is not None:
-                distance = travel.get("km")
-                try:
-                    distance_text = f"{float(distance):g} km"
-                except (TypeError, ValueError):
-                    distance_text = f"{distance} km"
-                parts.append(f"  - {distance_text}")
+            parts += _render_travel(item)
             if item.get("note"):
                 parts.append(f"  - {item['note']}")
 
