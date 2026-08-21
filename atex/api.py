@@ -27,7 +27,7 @@ DESCRIPTION = (
     "discovers real places through Google Places, checks each candidate against an accessibility "
     "knowledge base, and returns a paced itinerary in which every place carries an explicit "
     "accessibility verdict.\n\n"
-    "What it CAN do: interpret mobility and sensory needs, select activities, hotels and "
+    "What it CAN do: interpret wheelchair and walking-related mobility needs, select activities, hotels and "
     "restaurants worldwide, judge each place as verified / concerns / unverified "
     "with cited evidence, pace days around a stated activity limit with built-in rest, and "
     "answer follow-up turns that adjust an existing plan.\n\n"
@@ -68,8 +68,10 @@ EXAMPLE_PROMPTS = (
     "We are a family of four visiting Amsterdam for three days. Our daughter uses a manual "
     "wheelchair. We prefer a relaxed pace, no more than two activities per day. We need a "
     "verified accessible hotel.",
-    "Two days in Berlin, I use a powered wheelchair and I am sensitive to noise. I like "
-    "history and quiet parks.",
+    "Four days in New York City. I use a powered wheelchair and need step-free entrances "
+    "and accessible toilets. I prefer no more than two attractions per day.",
+    "Two days in Rome with my father, who uses a walker and cannot walk long distances. "
+    "We need step-free places, short distances, and a relaxed pace.",
 )
 
 

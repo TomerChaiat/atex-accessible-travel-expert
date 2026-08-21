@@ -389,13 +389,13 @@ class FakeLLMBackend:
                     "accessibility": activity.get("accessibility", "unknown"),
                     "note": _short_note(activity),
                 })
-                minutes += int(activity.get("duration_min") or 90) + 30
+                minutes += int(activity.get("duration_min") or 90)
                 placed += 1
 
                 if placed == 1 and per_day > 1:
                     meal = meals[(day_number - 1) % len(meals)] if meals else None
                     items.append({
-                        "time": _clock(max(minutes, 12 * 60 + 30)),
+                        "time": _clock(minutes),
                         "place_id": meal["place_id"] if meal else "meal-break",
                         "name": meal.get("name") if meal else "Lunch break",
                         "kind": "meal",
@@ -405,7 +405,7 @@ class FakeLLMBackend:
                     })
                     if meal:
                         used.add(meal["place_id"])
-                    minutes = max(minutes, 12 * 60 + 30) + 60
+                    minutes += 60
 
             days.append({
                 "day": day_number,
@@ -431,13 +431,11 @@ class FakeLLMBackend:
             "summary": (
                 f"A {trip_days}-day plan for {destination} at {per_day} "
                 f"{'activity' if per_day == 1 else 'activities'} per day, ordered so each day "
-                "stays in one part of the city, with a rest built into every day."
+                "stays in one part of the city without unnecessary stops."
             ),
             "days": days,
             "not_scheduled": not_scheduled[:6],
-            "warnings": [
-                "Travel times are straight-line estimates, not routed journeys.",
-            ],
+            "warnings": [],
             "things_to_confirm": [],
         }
 

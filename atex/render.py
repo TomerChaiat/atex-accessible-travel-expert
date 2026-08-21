@@ -138,16 +138,13 @@ def render_itinerary(state: RunState, trace: RunTrace, settings: Settings) -> st
                 line += f" {mark}"
             parts.append(line)
             travel = item.get("travel_from_previous")
-            if isinstance(travel, dict) and travel.get("min") is not None:
+            if isinstance(travel, dict) and travel.get("km") is not None:
                 distance = travel.get("km")
-                travel_parts = []
-                if distance is not None:
-                    try:
-                        travel_parts.append(f"{float(distance):g} km")
-                    except (TypeError, ValueError):
-                        travel_parts.append(f"{distance} km")
-                travel_parts.append(f"{travel['min']} min")
-                parts.append(f"  - {' · '.join(travel_parts)}")
+                try:
+                    distance_text = f"{float(distance):g} km"
+                except (TypeError, ValueError):
+                    distance_text = f"{distance} km"
+                parts.append(f"  - {distance_text}")
             if item.get("note"):
                 parts.append(f"  - {item['note']}")
 

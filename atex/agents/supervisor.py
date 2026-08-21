@@ -149,7 +149,10 @@ def decide(ctx: AgentContext, state: RunState) -> Decision:
         state.log("Supervisor: -> SchedulePlanner (validation complete)")
         return Decision(
             next_module=SCHEDULE_PLANNER,
-            instruction="Build the itinerary from the validated candidates.",
+            instruction=(
+                "Build the itinerary from all reviewed candidates; use unverified places "
+                "when supported alternatives are insufficient."
+            ),
             reasoning="Validation is complete.",
         )
 

@@ -1,4 +1,4 @@
-"""SchedulePlanner: validated candidates in, day-by-day itinerary out.
+"""SchedulePlanner: reviewed candidates in, day-by-day itinerary out.
 
 The model does the arranging. The code does the enforcing: after the itinerary
 comes back, every accessibility label is overwritten from the recorded verdicts.
@@ -114,6 +114,38 @@ def _compact_breaks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         kept_rest = True
         activities_since_downtime = 0
     return compact
+
+
+def _parse_time(value: Any) -> int | None:
+    try:
+        hours, minutes = str(value).strip().split(":", 1)
+        hours_int, minutes_int = int(hours), int(minutes)
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= hours_int <= 23 or not 0 <= minutes_int <= 59:
+        return None
+    return hours_int * 60 + minutes_int
+
+
+def _duration(item: dict[str, Any]) -> int:
+    defaults = {"meal": 60, "rest": 30, "transfer": 0}
+    try:
+        value = int(item.get("duration_min"))
+    except (TypeError, ValueError):
+        value = defaults.get(_normalise_label(item.get("kind")), 90)
+    return max(0, value)
+
+
+def _align_item_times(items: list[dict[str, Any]]) -> None:
+    """Make every start time equal the previous item's displayed end time."""
+    if not items:
+        return
+    cursor = _parse_time(items[0].get("time"))
+    if cursor is None:
+        cursor = 9 * 60 + 30
+    for item in items:
+        item["time"] = f"{(cursor // 60) % 24:02d}:{cursor % 60:02d}"
+        cursor += _duration(item)
 
 
 def _travel_lookup(matrix: list[dict[str, Any]] | None) -> dict[tuple[str, str], dict[str, Any]]:
@@ -244,6 +276,7 @@ def _enforce_verdicts(
                 item["accessibility"] = "unknown"
             clean_items.append(item)
         clean_items = _compact_breaks(clean_items)
+        _align_item_times(clean_items)
         _attach_travel_estimates(state, clean_items, matrix_lookup)
         day["items"] = clean_items
         day["day"] = day.get("day") or index

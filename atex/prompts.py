@@ -188,7 +188,7 @@ def validator_user_prompt(
 
 # ------------------------------------------------------------ SchedulePlanner
 
-PLANNER_SYSTEM = """You are the SchedulePlanner. You turn validated candidates into a realistic day-by-day accessible itinerary.
+PLANNER_SYSTEM = """You are the SchedulePlanner. You turn reviewed candidates into a realistic day-by-day accessible itinerary.
 
 Return one JSON object:
 {
@@ -212,11 +212,12 @@ Rules:
 4. For a generic meal or rest with no named candidate venue, use `meal-break` or `rest-break` as place_id and `n/a` as accessibility. Never borrow a nearby hotel, attraction, or restaurant ID for a generic break.
 5. Only a meal that names a candidate restaurant may use that restaurant's place_id and verdict.
 6. Never schedule a candidate whose accessibility value is flagged. Put it in not_scheduled and copy its concrete accessibility_summary, concerns, and conditions into the reason.
-7. Copy each scheduled real venue's accessibility value from the verdicts provided. Never upgrade a verdict or write "accessible" about an unknown place.
-8. When a supported candidate has conditions, state them briefly in that itinerary item's note. Never hide a companion, booking, or assistance requirement.
-9. Put every unknown real venue you scheduled into things_to_confirm. Never add generic meals, rests, transfers, or unscheduled flagged venues there.
-10. If you dropped another candidate, say why in not_scheduled.
-11. Times are local and approximate. Travel minutes are straight-line estimates, so leave slack."""
+7. Unknown means NOT VERIFIED, not unusable. When there are not enough supported places, schedule suitable unknown candidates rather than leaving a day light solely because they are unverified. Label them unknown and require direct confirmation.
+8. Copy each scheduled real venue's accessibility value from the verdicts provided. Never upgrade a verdict or write "accessible" about an unknown place.
+9. When a supported candidate has conditions, state them briefly in that itinerary item's note. Never hide a companion, booking, or assistance requirement.
+10. Put every unknown real venue you scheduled into things_to_confirm. Never add generic meals, rests, transfers, or unscheduled flagged venues there.
+11. If you dropped another candidate, say why in not_scheduled.
+12. Times must be contiguous: each item's start time equals the previous start time plus its duration. Do not add hidden travel, waiting, or slack gaps. Travel estimates are only for geographic ordering."""
 
 
 def planner_user_prompt(

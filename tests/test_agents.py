@@ -454,21 +454,35 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
             state,
             {
                 "days": [{"day": 1, "items": [
-                    {"place_id": "p1", "name": "Unknown Place", "kind": "activity"},
-                    {"place_id": "meal-break", "name": "Lunch", "kind": "meal"},
-                    {"place_id": "p3", "name": "Second Place", "kind": "activity"},
+                    {
+                        "time": "09:30", "duration_min": 90,
+                        "place_id": "p1", "name": "Unknown Place", "kind": "activity",
+                    },
+                    {
+                        "time": "11:30", "duration_min": 60,
+                        "place_id": "meal-break", "name": "Lunch", "kind": "meal",
+                    },
+                    {
+                        "time": "13:00", "duration_min": 90,
+                        "place_id": "p3", "name": "Second Place", "kind": "activity",
+                    },
                 ]}],
             },
             [{"from": "p1", "to": "p3", "min": 14, "km": 1.5}],
         )
         destination = itinerary["days"][0]["items"][2]
         self.assertEqual(destination["travel_from_previous"], {"min": 14, "km": 1.5})
+        self.assertEqual(
+            [item["time"] for item in itinerary["days"][0]["items"]],
+            ["09:30", "11:00", "12:00"],
+        )
 
         state.profile = {"destination": "Test City", "trip_days": 1}
         state.itinerary = itinerary
         settings = load_settings()
         rendered = render_itinerary(state, RunTrace(settings.budget), settings)
-        self.assertIn("1.5 km · 14 min", rendered)
+        self.assertIn("1.5 km", rendered)
+        self.assertNotIn("14 min", rendered)
         self.assertNotIn("accessible route", rendered.lower())
 
     def test_generic_rows_cannot_borrow_candidate_verdicts(self):
