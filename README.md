@@ -71,11 +71,13 @@ the trace. A test enforces this.
 |---|---|---|
 | `Supervisor` | Routing, invariants, replanning, clarification | 1 call per turn |
 | `UserProfileAgent` | Free text → structured profile | 1 call |
-| `ActivityLogisticsFinder` | ReAct over live Google Places results | ≤ 4 calls |
-| `AccessibilityValidator` | RAG verdicts with cited evidence | 1 call per 3 places |
+| `ActivityLogisticsFinder` | ReAct over live Google Places results | ≤ 8 calls per round |
+| `AccessibilityValidator` | RAG verdicts with cited evidence | 1 call per 5 places |
 | `SchedulePlanner` | Day-by-day itinerary | 1 call |
 
-A typical 3-day trip costs **12–14 LLM calls and ~15k tokens**.
+A typical 3-day trip costs **12–14 LLM calls and ~15k tokens**. A two-week trip
+needs far more candidates and lands nearer **35–45 calls and ~90k tokens**, which
+is what the limits below are sized for.
 
 ---
 
@@ -107,12 +109,19 @@ All limits live in `Budget` (`atex/config.py`).
 
 | Limit | Configured value |
 |---|---|
-| Supervisor turns | 8 |
-| Total LLM calls | 20 |
-| Tokens per run | 60,000 |
-| Wall clock | 240s |
-| ReAct iterations | 4 |
-| Validation batch | 3 |
+| Supervisor turns | 14 |
+| Total LLM calls | 60 |
+| Tokens per run | 200,000 |
+| Wall clock | 270s |
+| ReAct iterations (per finder round) | 8 |
+| Finder rounds | 3 |
+| Places validated per run | 60 |
+| Validation batch | 5 |
+
+The numbers are sized against a real two-week itinerary — roughly 50 candidates
+and 40-odd scheduled stops — and against Vercel's 300s ceiling at an observed
+~2.5s per LLM call. They are not a target: a three-day trip still finishes in
+around 14 calls.
 
 Each limit keeps a **reserve**. Crossing the soft limit is not an error: it
 hands control to *forced finalize*, which runs `SchedulePlanner` from the

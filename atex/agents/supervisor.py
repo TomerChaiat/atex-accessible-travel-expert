@@ -34,7 +34,7 @@ CHOICES = {
     FINISH,
 }
 
-MAX_FINDER_ROUNDS = 2
+MAX_FINDER_ROUNDS = 3
 
 
 class Decision:
@@ -129,6 +129,13 @@ def decide(ctx: AgentContext, state: RunState) -> Decision:
     ):
         names = ", ".join(candidate.name for candidate in flagged[:6])
         state.log("Supervisor: -> ActivityLogisticsFinder (replace concerns)")
+        # No model call is needed to know this, so none is made -- which means
+        # no Supervisor entry appears in `steps` between the two modules. Say
+        # so in the trace, or the jump looks like a missing routing decision.
+        ctx.trace.note(
+            "Supervisor routed to ActivityLogisticsFinder deterministically "
+            "(accessibility concerns get one replacement round); no model call was needed."
+        )
         return Decision(
             next_module=ACTIVITY_LOGISTICS_FINDER,
             instruction=(
@@ -136,6 +143,21 @@ def decide(ctx: AgentContext, state: RunState) -> Decision:
                 f"concerns: {names}. Do not select any previously checked place."
             ),
             reasoning="Accessibility concerns require one replacement search.",
+        )
+
+    # Live discovery found nothing and the planner has already said so. There
+    # is no module that can improve on that, so re-running one only burns
+    # turns until the limit trips.
+    if state.itinerary is not None and not state.candidates:
+        state.log("Supervisor: -> FINISH (no candidates exist to plan with)")
+        ctx.trace.note(
+            "Supervisor finished deterministically: place discovery returned nothing, "
+            "so the empty-result itinerary is final; no model call was needed."
+        )
+        return Decision(
+            next_module=FINISH,
+            instruction="Return the empty-result response.",
+            reasoning="No candidate places exist.",
         )
 
     # Once every selected candidate has a verdict (and the replacement round
@@ -147,6 +169,10 @@ def decide(ctx: AgentContext, state: RunState) -> Decision:
         and not state.unvalidated()
     ):
         state.log("Supervisor: -> SchedulePlanner (validation complete)")
+        ctx.trace.note(
+            "Supervisor routed to SchedulePlanner deterministically "
+            "(every candidate has a verdict); no model call was needed."
+        )
         return Decision(
             next_module=SCHEDULE_PLANNER,
             instruction=(

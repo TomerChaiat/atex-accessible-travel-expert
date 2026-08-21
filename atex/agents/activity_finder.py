@@ -22,6 +22,11 @@ from ..state import Candidate, RunState
 from ..tools import ToolError, build_toolset
 
 OBSERVATION_WINDOW = 3
+
+# A longer ReAct budget is only worth having if a dead end can end early.
+# Two searches in a row that return nothing mean the provider has nothing for
+# this destination, and a third will not change that.
+MAX_EMPTY_SEARCHES = 2
 DINING_TERMS = {
     "cafe",
     "café",
@@ -116,11 +121,24 @@ def _select(ctx: AgentContext, state: RunState, ids: list[str], hotel_id: str | 
     return added
 
 
+def activities_needed(state: RunState) -> int:
+    """How many activities this trip actually requires.
+
+    A two-week trip at three stops a day needs forty-odd places. Leaving the
+    model to infer that from `trip_days` produced itineraries with one short
+    activity on most days, so the number is computed and stated outright.
+    """
+    profile = state.profile or {}
+    days = max(1, int(profile.get("trip_days") or 3))
+    per_day = max(1, int(profile.get("max_activities_per_day") or 2))
+    return days * per_day
+
+
 def _fallback_select(ctx: AgentContext, state: RunState, observations) -> int:
     """Salvage a selection when the model never called finish."""
-    profile = state.profile or {}
-    wanted = max(2, (profile.get("trip_days") or 3) * (profile.get("max_activities_per_day") or 2))
+    wanted = max(2, activities_needed(state))
     ids = _ids_seen(observations)
+    profile = state.profile or {}
 
     activities, hotels = [], []
     for place_id in ids:
@@ -137,7 +155,7 @@ def _fallback_select(ctx: AgentContext, state: RunState, observations) -> int:
             activities.append(place.id)
 
     hotel_id = hotels[0] if (hotels and profile.get("needs_hotel")) else None
-    return _select(ctx, state, activities[: wanted + 2], hotel_id)
+    return _select(ctx, state, activities[: wanted + 4], hotel_id)
 
 
 def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
@@ -153,7 +171,9 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
 
     observations: list[dict[str, Any]] = []
     finished = False
+    empty_searches = 0
     state.finder_rounds += 1
+    target = activities_needed(state)
 
     for iteration in range(budget.react_max_iters):
         turns_left = budget.react_max_iters - iteration
@@ -164,7 +184,12 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
             ACTIVITY_LOGISTICS_FINDER,
             FINDER_SYSTEM,
             finder_user_prompt(
-                profile, instruction, observations[-OBSERVATION_WINDOW:], turns_left
+                profile,
+                instruction,
+                observations[-OBSERVATION_WINDOW:],
+                turns_left,
+                activities_needed=target,
+                already_selected=len(previously_checked),
             ),
             max_tokens=600,
         )
@@ -194,6 +219,18 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
         except ToolError as exc:
             result = {"error": str(exc)}
         observations.append({"tool": tool_name, "args": args, "result": result})
+
+        if tool_name.startswith("search_"):
+            if result.get("results"):
+                empty_searches = 0
+            else:
+                empty_searches += 1
+                if empty_searches >= MAX_EMPTY_SEARCHES:
+                    state.log(
+                        f"ActivityLogisticsFinder: {empty_searches} empty searches; "
+                        "stopping instead of spending the rest of the loop"
+                    )
+                    break
 
     if not finished:
         added = _fallback_select(ctx, state, observations)

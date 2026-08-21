@@ -90,7 +90,7 @@ Google key is absent, which keeps local tests deterministic.
 Reasons, in order of weight:
 
 The live search is kept safe for Vercel by a strict field mask, short HTTP
-timeouts, one retry, result caps, and the existing four-turn ReAct limit. The
+timeouts, one retry, result caps, and the bounded ReAct loop. The
 finder stores compact result briefs in the prompt rather than full provider
 records.
 
@@ -165,12 +165,14 @@ the itinerary has not already explained.
 |---|---|
 | Places passed as compact `brief` forms, never full records | Keeps finder prompts small |
 | `Supervisor` sees a lossy state summary, not a transcript | Per-turn prompt stays ~constant as the trip grows |
-| Verdicts batched, three places per call | 9 validator calls → 3 |
+| Verdicts batched, five places per call | 50 validator calls → 10 |
 | Empty retrieval short-circuits the model | Free verdicts for unknown places |
 | ReAct observations windowed to the last three | A long loop cannot inflate the prompt |
+| Two empty searches end the finder loop early | A destination with no coverage costs 2 calls, not 8 |
 | Final response rendered by code, not an LLM | Saves a call and cannot contradict the verdicts |
 
-A three-day trip costs roughly 12–14 calls and ~15k tokens.
+A three-day trip costs roughly 12–14 calls and ~15k tokens; a two-week trip
+nearer 35–45 calls and ~90k tokens.
 
 ### 6. Guardrails with reserved headroom
 
@@ -230,7 +232,7 @@ stdlib `urllib`. Porting the same functions into a `StateGraph` is mechanical.
 | Supervisor coordinating four agents | Unchanged | The decomposition held up |
 | Live Maps APIs, web search, MCP tools | Curated catalogue via in-process tools | Latency, cost, the 300s cap, reproducibility |
 | Knowledge base from named accessibility websites | Provenance recorded per passage; OSM harvester provided | We will not attribute claims to sources we have not actually ingested |
-| One verdict per place | Verdicts batched three per call | Cuts validator calls by two thirds |
+| One verdict per place | Verdicts batched five per call | Cuts validator calls by four fifths |
 | "Never invent an answer" as a principle | Enforced by citation checks and verdict overwriting | A principle the code guarantees rather than requests |
 
 ---

@@ -51,9 +51,11 @@ them is the single biggest improvement available:
 2. **Graph framework.** The orchestrator is a hand-rolled loop over
    framework-shaped nodes, for the reasons in `docs/design.md`. If the course
    expects a named graph library, porting is mechanical.
-3. **Budget defaults.** 20 calls / 60k tokens / 240s per run are conservative
-   estimates made before real token costs were known. Revisit against actual
-   usage and the $13 ceiling.
+3. **Budget defaults.** 60 calls / 200k tokens / 270s per run are sized for a
+   two-week itinerary at an observed ~2.5s and ~1.6k tokens per call. A
+   three-day trip still costs about 14 calls, so the ceiling only binds on
+   long trips. Revisit against real usage and the $13 spend cap — a
+   worst-case run is now materially more expensive than before.
 4. **`maxDuration`.** `vercel.json` requests 300s, the assignment's ceiling. If
    the deployment plan caps it lower, reduce it and set
    `ATEX_WALL_CLOCK_BUDGET_S` about 10s below the platform limit so the agent

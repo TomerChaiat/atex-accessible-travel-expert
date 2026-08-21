@@ -31,6 +31,15 @@ PACE_DEFAULTS = {"relaxed": 2, "moderate": 3, "packed": 4}
 
 VALID_TRANSPORT = {"wheelchair_walk", "accessible_transit", "accessible_taxi"}
 
+# Someone asking for two weeks must get two weeks. This exists only to stop a
+# misparsed "365 days" turning into an unplannable run; the real cost control
+# is the Budget, not a truncated trip.
+MAX_TRIP_DAYS = 21
+
+# Nights away from home need somewhere to sleep. Below this, a day trip is
+# plausible and accommodation should not be assumed.
+HOTEL_ASSUMED_FROM_DAYS = 2
+
 
 def _as_int(value: Any, default: int | None = None) -> int | None:
     try:
@@ -59,7 +68,7 @@ def normalize_profile(raw: dict[str, Any]) -> dict[str, Any]:
     per_day = max(1, min(per_day, 5))
 
     trip_days = _as_int(raw.get("trip_days")) or 3
-    trip_days = max(1, min(trip_days, 7))  # keeps one run inside the time budget
+    trip_days = max(1, min(trip_days, MAX_TRIP_DAYS))
 
     # How far the traveller can cover under their own power decides which
     # travel modes are worth offering at all. A wheelchair already implies a
@@ -68,6 +77,13 @@ def normalize_profile(raw: dict[str, Any]) -> dict[str, Any]:
 
     transport = str(raw.get("preferred_transport") or "").strip().lower()
     preferred_transport = transport if transport in VALID_TRANSPORT else None
+
+    # "Two weeks in New York" does not say "I need a hotel", but it plainly
+    # means it. Silence is not a no: only an explicit false -- staying with
+    # family, living locally -- suppresses accommodation.
+    needs_hotel = raw.get("needs_hotel")
+    if not isinstance(needs_hotel, bool):
+        needs_hotel = trip_days >= HOTEL_ASSUMED_FROM_DAYS
 
     destination = raw.get("destination")
     return {
@@ -91,7 +107,7 @@ def normalize_profile(raw: dict[str, Any]) -> dict[str, Any]:
         "max_activities_per_day": per_day,
         "budget_level": raw.get("budget_level"),
         "interests": [str(i).lower() for i in (raw.get("interests") or [])][:8],
-        "needs_hotel": bool(raw.get("needs_hotel")),
+        "needs_hotel": needs_hotel,
         "accessibility_needs": sorted(needs),
         "missing_info": [str(m) for m in (raw.get("missing_info") or [])][:5],
         "notes": str(raw.get("notes") or "")[:300],

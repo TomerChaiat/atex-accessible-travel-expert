@@ -20,14 +20,18 @@ from atex.agents.accessibility_validator import (  # noqa: E402
     _sanitize,
     retrieve_evidence,
 )
-from atex.agents.activity_finder import _finish_selection, _wants_restaurants  # noqa: E402
-from atex.agents.supervisor import _legalize, decide  # noqa: E402
+from atex.agents.activity_finder import (  # noqa: E402
+    _finish_selection,
+    _wants_restaurants,
+    activities_needed,
+)
+from atex.agents.supervisor import MAX_FINDER_ROUNDS, _legalize, decide  # noqa: E402
 from atex.agents.schedule_planner import (  # noqa: E402
     _enforce_verdicts,
     _flagged_reason,
     _parse_time,
 )
-from atex.agents.user_profile import normalize_profile  # noqa: E402
+from atex.agents.user_profile import MAX_TRIP_DAYS, normalize_profile  # noqa: E402
 from atex.config import load_settings  # noqa: E402
 from atex.graph import run_agent  # noqa: E402
 from atex.httpjson import HttpError, extract_json_object  # noqa: E402
@@ -74,7 +78,7 @@ class TestProfileNormalisation(unittest.TestCase):
 
     def test_absurd_values_are_clamped(self):
         profile = normalize_profile({"trip_days": 400, "max_activities_per_day": 99})
-        self.assertLessEqual(profile["trip_days"], 7)
+        self.assertLessEqual(profile["trip_days"], MAX_TRIP_DAYS)
         self.assertLessEqual(profile["max_activities_per_day"], 5)
 
     def test_garbage_input_still_yields_a_usable_profile(self):
@@ -102,6 +106,22 @@ class TestProfileNormalisation(unittest.TestCase):
     def test_a_real_transport_preference_is_kept(self):
         profile = normalize_profile({"preferred_transport": "accessible_taxi"})
         self.assertEqual(profile["preferred_transport"], "accessible_taxi")
+
+    def test_two_weeks_stays_two_weeks(self):
+        # A 7-day ceiling silently turned "two weeks in New York" into a
+        # 7-day itinerary. Trip length is the traveller's to decide.
+        self.assertEqual(normalize_profile({"trip_days": 14})["trip_days"], 14)
+
+    def test_a_multi_day_trip_assumes_somewhere_to_sleep(self):
+        # Silence is not a no: "two weeks in New York" plainly needs a hotel.
+        self.assertTrue(normalize_profile({"trip_days": 14})["needs_hotel"])
+
+    def test_an_explicit_no_hotel_is_respected(self):
+        profile = normalize_profile({"trip_days": 14, "needs_hotel": False})
+        self.assertFalse(profile["needs_hotel"])
+
+    def test_a_single_day_trip_assumes_no_hotel(self):
+        self.assertFalse(normalize_profile({"trip_days": 1})["needs_hotel"])
 
     def test_group_size_is_preserved_for_conditional_access(self):
         profile = normalize_profile({"party_size": 4})
@@ -377,7 +397,7 @@ class TestGooglePlacesRepository(unittest.TestCase):
     def test_empty_live_discovery_routes_to_planner_at_search_limit(self):
         state = RunState(request="Four days in Rome")
         state.profile = {"destination": "Rome", "trip_days": 4}
-        state.finder_rounds = 2
+        state.finder_rounds = MAX_FINDER_ROUNDS
 
         actual, corrected = _legalize(state, "ActivityLogisticsFinder")
 
@@ -612,6 +632,54 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
         self.assertIn(
             "hotel-2", {entry["place_id"] for entry in itinerary["not_scheduled"]}
         )
+
+    def test_a_venue_with_no_resolvable_location_is_not_scheduled(self):
+        # An obsolete Google ID yields no coordinates, so there is no way to
+        # say how far away it is or how to reach it. A stop you cannot get to
+        # is not a plan -- it is dropped, and the reason is stated.
+        state = self._state()
+        state.candidates["ghost"] = Candidate(
+            "ghost", "Vanished Pier", "activity", {}, verdict="unknown"
+        )
+        places = {
+            "p1": SimpleNamespace(id="p1", lat=52.0, lon=4.0),
+            # Present in the map but with no usable location.
+            "ghost": SimpleNamespace(id="ghost", lat=0.0, lon=0.0),
+        }
+        itinerary = _enforce_verdicts(
+            state,
+            {
+                "days": [{"day": 1, "items": [
+                    {"place_id": "p1", "name": "Unknown Place", "kind": "activity"},
+                    {"place_id": "ghost", "name": "Vanished Pier", "kind": "activity"},
+                ]}],
+            },
+            router=LocalRouter(),
+            places=places,
+        )
+        items = itinerary["days"][0]["items"]
+        self.assertEqual([item["place_id"] for item in items], ["p1"])
+        reasons = {
+            entry["place_id"]: entry["reason"] for entry in itinerary["not_scheduled"]
+        }
+        self.assertIn("ghost", reasons)
+        self.assertIn("location", reasons["ghost"].lower())
+
+    def test_a_details_outage_empties_travel_not_the_itinerary(self):
+        # No locations at all means the provider failed, not that every venue
+        # is unreachable. The plan must survive.
+        state = self._state()
+        itinerary = _enforce_verdicts(
+            state,
+            {
+                "days": [{"day": 1, "items": [
+                    {"place_id": "p1", "name": "Unknown Place", "kind": "activity"},
+                ]}],
+            },
+            router=LocalRouter(),
+            places={},
+        )
+        self.assertEqual(len(itinerary["days"][0]["items"]), 1)
 
     def test_travel_time_between_venues_moves_the_next_start(self):
         state = self._state()
@@ -960,6 +1028,34 @@ class TestGoogleRoutesRouter(unittest.TestCase):
             router.options(self.ORIGIN, self.DESTINATION, profile)
         self.assertEqual(call.call_count, 1)
 
+    def test_a_partly_answered_hop_stays_internally_consistent(self):
+        # Google answered DRIVE but not WALK. Estimating the walk from the
+        # short straight line while quoting Google's longer route distance
+        # made walking look faster than a taxi over the same hop.
+        far = SimpleNamespace(id="c", lat=52.03, lon=4.0)
+        profile = {"mobility": {"wheelchair": "powered"}}
+
+        def only_drive(url, body, **kwargs):
+            if body["travelMode"] != "DRIVE":
+                raise HttpError(404, "no route", url)
+            return {"routes": [{"duration": "600s", "distanceMeters": 4200}]}
+
+        with patch("atex.routing.post_json", side_effect=only_drive):
+            options = GoogleRoutesRouter("key").options(self.ORIGIN, far, profile)
+
+        by_mode = {o["mode"]: o for o in options}
+        self.assertEqual(by_mode["accessible_taxi"]["source"], "google")
+        self.assertIn("accessible_transit", by_mode)
+        # Every option is measured against the same distance...
+        self.assertEqual(
+            {o["km"] for o in options}, {by_mode["accessible_taxi"]["km"]}
+        )
+        # ...so a slower mode can never come out quicker than a faster one.
+        self.assertGreaterEqual(
+            by_mode["accessible_transit"]["minutes"],
+            by_mode["accessible_taxi"]["minutes"],
+        )
+
     def test_no_maps_key_selects_the_local_router(self):
         self.assertIsInstance(build_router(SimpleNamespace(google_maps_api_key="")), LocalRouter)
         self.assertIsInstance(
@@ -1084,7 +1180,46 @@ class TestRetrievalRecall(unittest.TestCase):
         self.assertIn({"city": "Rome"}, vectors.filters)
 
 
+class TestRunCapacity(unittest.TestCase):
+    """The limits have to fit the trips the system claims to plan."""
+
+    def _profile(self, days, per_day=3):
+        state = RunState("x")
+        state.profile = {"trip_days": days, "max_activities_per_day": per_day}
+        return state
+
+    def test_a_two_week_trip_asks_for_enough_places_to_fill_it(self):
+        self.assertEqual(activities_needed(self._profile(14, 3)), 42)
+
+    def test_the_budget_can_validate_a_two_week_trip(self):
+        # 42 activities plus a hotel and spares must not hit the per-run cap,
+        # which is what left places "not checked" on the New York run.
+        budget = load_settings().budget
+        self.assertGreaterEqual(budget.max_validations_per_run, 50)
+
+    def test_the_budget_allows_the_calls_a_long_trip_costs(self):
+        budget = load_settings().budget
+        needed = (
+            1                                          # UserProfileAgent
+            + budget.react_max_iters                   # one finder round
+            + -(-50 // budget.validation_batch_size)   # validator batches
+            + 1                                        # SchedulePlanner
+            + budget.max_supervisor_turns
+        )
+        self.assertGreaterEqual(budget.max_total_llm_calls, needed)
+
+    def test_the_wall_clock_stays_inside_the_platform_limit(self):
+        # vercel.json requests 300s; finishing must happen before that.
+        budget = load_settings().budget
+        self.assertLessEqual(budget.wall_clock_budget_s, 290.0)
+        self.assertGreater(budget.reserve_wall_clock_s, 0)
+
+
 class TestConcernReplacementRouting(unittest.TestCase):
+    @staticmethod
+    def _ctx():
+        return SimpleNamespace(trace=RunTrace(load_settings().budget))
+
     def _state(self, finder_rounds: int) -> RunState:
         state = RunState("Two days in Rome using a wheelchair")
         state.profile = {"destination": "Rome", "trip_days": 2}
@@ -1100,12 +1235,26 @@ class TestConcernReplacementRouting(unittest.TestCase):
         return state
 
     def test_concern_triggers_one_replacement_search(self):
-        decision = decide(SimpleNamespace(), self._state(finder_rounds=1))
+        decision = decide(self._ctx(), self._state(finder_rounds=1))
         self.assertEqual(decision.next_module, "ActivityLogisticsFinder")
         self.assertIn("Museum With Steps", decision.instruction)
 
+    def test_an_empty_result_run_finishes_instead_of_replanning(self):
+        # Discovery found nothing and the planner already said so. Re-running
+        # a module cannot improve that; it just burns turns until the limit.
+        state = RunState("Two weeks somewhere with no coverage")
+        state.profile = {"destination": "Nowhere", "trip_days": 14}
+        state.finder_rounds = MAX_FINDER_ROUNDS
+        state.itinerary = {"days": [], "summary": "No candidates."}
+
+        ctx = self._ctx()
+        decision = decide(ctx, state)
+
+        self.assertEqual(decision.next_module, "FINISH")
+        self.assertEqual(ctx.trace.llm_calls, 0)
+
     def test_concern_does_not_create_an_unbounded_search_loop(self):
-        decision = decide(SimpleNamespace(), self._state(finder_rounds=2))
+        decision = decide(self._ctx(), self._state(finder_rounds=MAX_FINDER_ROUNDS))
         self.assertEqual(decision.next_module, "SchedulePlanner")
 
 

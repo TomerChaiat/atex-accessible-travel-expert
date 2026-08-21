@@ -185,11 +185,27 @@ class GoogleRoutesRouter(LocalRouter):
         estimates = super().options(origin, destination, profile)
         slow_on_foot = _is_self_powered_slow(profile)
 
+        live_by_mode = {
+            option["mode"]: self._route(origin, destination, option["mode"])
+            for option in estimates
+        }
+        # A mode Google could not answer must not be estimated from a shorter
+        # straight line than the modes it could. Mixing the two produced a
+        # 1.65 km hop whose walk came out faster than its taxi.
+        basis_km = next(
+            (live["km"] for live in live_by_mode.values() if live and live["km"]),
+            None,
+        )
+
         merged = []
         for option in estimates:
-            live = self._route(origin, destination, option["mode"])
+            live = live_by_mode.get(option["mode"])
             if live is None:
-                merged.append(option)
+                merged.append(
+                    self._estimate(option["mode"], basis_km)
+                    if basis_km is not None
+                    else option
+                )
                 continue
             minutes = live["minutes"]
             if option["mode"] == "wheelchair_walk" and slow_on_foot:

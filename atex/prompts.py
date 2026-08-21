@@ -66,13 +66,15 @@ Return one JSON object with exactly these keys:
  "max_activities_per_day": integer|null,
  "budget_level": "free"|"low"|"mid"|"high"|null,
  "interests": [string],                // lowercase tags, e.g. museum, park, art, food, history
- "needs_hotel": boolean,
+ "needs_hotel": boolean|null,        // null when the traveller does not say
  "accessibility_needs": [string],      // from: step_free_entrance, accessible_toilet, lift_access, wheelchair_rental, accessible_parking, quiet_space, audio_guide_captioned, tactile_or_braille, assistance_animals
  "missing_info": [string],             // details that would improve the plan but are not blocking
  "notes": string
 }
 
 Use null when the request does not say, and never invent a destination. If a manual or powered wheelchair is mentioned, set step_free_required true and include step_free_entrance and accessible_toilet in accessibility_needs.
+Set needs_hotel true when they ask for somewhere to stay, false only when they say they do not need it (staying with family, living locally, a day trip), and null when they simply do not mention it. Do not infer false from silence.
+Report trip_days exactly as stated. "Two weeks" is 14, "a fortnight" is 14, "ten days" is 10. Never shorten a trip because it seems long.
 Set walking_limited true whenever the traveller uses a wheelchair, walker, rollator, cane or crutches, or says they cannot walk far, tire quickly, or need short distances. This decides how far it is reasonable to suggest they travel under their own power.
 Set preferred_transport only when the traveller names how they want to get around: on foot or self-propelling is wheelchair_walk, buses/trams/metro/trains is accessible_transit, taxis or private cars is accessible_taxi. Leave it null when they do not say, so they are offered the choice.
 Set party_size to 1 when the traveller explicitly says they are alone. Count named companions or group size when present. If they say family or group without a number, use 2 to represent at least one companion. Set assistant_present true only for an explicit caregiver, personal assistant, or companion who will provide assistance; an ordinary group is represented by party_size."""
@@ -113,10 +115,11 @@ Rules:
 1. The provider's "claims" field is an unverified hint, not a verdict. You may use it to rank, but you must not describe a place as accessible. The AccessibilityValidator decides that later.
 2. Do not discard a place merely because a claim is "unknown". Missing information is not a negative; surfacing it is the point of this system.
 3. Do discard a place whose required claim is explicitly "no".
-4. Select roughly trip_days x max_activities_per_day activities, plus a few spares so the planner has alternatives.
-5. Select restaurants only when the request or profile interests explicitly ask for food, dining, a cafe, or a restaurant. The planner can create an unlabeled generic meal break otherwise.
-6. In finish, copy only exact, complete IDs from the observations. Never shorten, edit, reconstruct, or invent a place ID.
-7. Call finish as soon as you have enough. You have very few turns."""
+4. The user prompt gives you activities_needed. Select at least that many, plus a few spares so the planner has alternatives. A long trip needs a lot of places: do not finish with six candidates for a two-week itinerary.
+5. If one search does not return enough, search again with different categories or neighbourhoods before finishing. Varied categories give the planner distinct days instead of six versions of the same museum.
+6. Select restaurants only when the request or profile interests explicitly ask for food, dining, a cafe, or a restaurant. The planner can create an unlabeled generic meal break otherwise.
+7. In finish, copy only exact, complete IDs from the observations. Never shorten, edit, reconstruct, or invent a place ID.
+8. Finish once you have activities_needed plus spares, or when turns_left reaches 1. Do not burn turns you do not need, and do not finish early while short of the target."""
 
 
 def finder_user_prompt(
@@ -124,11 +127,15 @@ def finder_user_prompt(
     instruction: str,
     observations: list[dict[str, Any]],
     turns_left: int,
+    activities_needed: int,
+    already_selected: int = 0,
 ) -> str:
     return json.dumps(
         {
             "profile": profile,
             "instruction": instruction,
+            "activities_needed": activities_needed,
+            "already_selected": already_selected,
             "observations": observations,
             "turns_left": turns_left,
         },

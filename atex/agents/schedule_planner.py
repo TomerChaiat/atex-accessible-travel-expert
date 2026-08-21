@@ -283,6 +283,47 @@ def _attach_travel_options(
     return attached
 
 
+def _has_location(place: Any) -> bool:
+    try:
+        lat, lon = float(place.lat), float(place.lon)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    # Google returns 0,0 for a record whose location field was dropped.
+    return not (lat == 0.0 and lon == 0.0)
+
+
+def _drop_unreachable(
+    state: RunState, items: list[dict[str, Any]], places: dict[str, Any] | None
+) -> list[tuple[str, str]]:
+    """Remove scheduled venues whose location could not be resolved.
+
+    A place whose details lookup failed -- an obsolete or altered Google ID --
+    has no coordinates, so there is no distance to quote and no way to say how
+    the traveller reaches it. A stop you cannot work out how to get to is not a
+    plan, so it is dropped and explained rather than left in the day bare.
+
+    Skipped entirely when no locations resolved at all, because a provider
+    outage must empty the travel details, not the itinerary.
+    """
+    if not places:
+        return []
+
+    dropped: list[tuple[str, str]] = []
+    kept: list[dict[str, Any]] = []
+    for item in items:
+        place_id = str(item.get("place_id") or "")
+        candidate = state.candidates.get(place_id)
+        if candidate is not None and not _has_location(places.get(place_id)):
+            name = str(item.get("name") or candidate.name)
+            state.log(f"SchedulePlanner: dropped unreachable {name}")
+            dropped.append((place_id, name))
+            continue
+        kept.append(item)
+
+    items[:] = kept
+    return dropped
+
+
 def _ordered_candidates(state: RunState) -> list:
     """Order candidates for planning while retaining rejected ones in state.
 
@@ -325,6 +366,7 @@ def _enforce_verdicts(
     places: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     scheduled_non_ok: list[tuple[str, str, str]] = []
+    unreachable: list[tuple[str, str]] = []
     matrix_lookup = _travel_lookup(travel_estimates)
     profile = state.profile or {}
 
@@ -387,8 +429,11 @@ def _enforce_verdicts(
                 # verdict, so it cannot be presented as checked.
                 item["accessibility"] = "unknown"
             clean_items.append(item)
+        # Venues we cannot locate go before anything else: they must not
+        # become the origin of the next hop's distance.
+        unreachable.extend(_drop_unreachable(state, clean_items, places))
         clean_items = _compact_breaks(clean_items)
-        # Travel first: the times below are laid out around it.
+        # Travel next: the times below are laid out around it.
         _attach_travel_options(
             state, clean_items, matrix_lookup, router, places, profile
         )
@@ -468,6 +513,24 @@ def _enforce_verdicts(
                 "reason": _flagged_reason(candidate),
             }
         )
+    # A venue removed for being unreachable is still a venue the traveller was
+    # offered and then did not get. Saying why beats a silent disappearance.
+    for place_id, name in unreachable:
+        if place_id in listed_ids:
+            continue
+        listed_ids.add(place_id)
+        not_scheduled.append(
+            {
+                "place_id": place_id,
+                "name": name,
+                "reason": (
+                    "The place provider no longer returns a location for this venue, "
+                    "so there is no way to say how far away it is or how to reach it. "
+                    "It was left out rather than scheduled without directions."
+                ),
+            }
+        )
+
     itinerary["not_scheduled"] = not_scheduled
     return itinerary
 
@@ -510,6 +573,12 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
     matrix = travel_matrix(places)
     places_by_id = {place.id: place for place in places}
 
+    # A fixed ceiling truncated long trips: a two-week plan is roughly seven
+    # times the JSON of a two-day one. Scale with the trip, then cap.
+    trip_days = max(1, int((state.profile or {}).get("trip_days") or 3))
+    budget = ctx.settings.budget
+    output_tokens = min(budget.planner_max_output_tokens, 1200 + 500 * trip_days)
+
     result = ctx.llm.complete_json(
         SCHEDULE_PLANNER,
         PLANNER_SYSTEM,
@@ -519,7 +588,7 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
             travel_matrix=matrix,
             instruction=instruction or "Build the itinerary now.",
         ),
-        max_tokens=2000,
+        max_tokens=output_tokens,
     )
 
     state.itinerary = _enforce_verdicts(

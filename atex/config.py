@@ -37,26 +37,38 @@ class Budget:
     as soon as a soft limit trips; the reserve is what remains for the
     forced-finalize path, so a run that exhausts its budget still returns a
     real itinerary instead of an error or a timeout.
+
+    The numbers are sized against Vercel's 300s ceiling and a real two-week
+    itinerary: roughly 50 candidates, ~10 validator calls, and a planner that
+    has to emit 40-odd scheduled items. An observed run costs about 2.5s per
+    LLM call, so ~45 calls lands near 110s -- comfortably inside the wall
+    clock, with the reserve still intact.
     """
 
-    max_supervisor_turns: int = 8
-    max_total_llm_calls: int = 20
-    max_tokens_per_run: int = 60_000
-    wall_clock_budget_s: float = 240.0
+    max_supervisor_turns: int = 14
+    max_total_llm_calls: int = 60
+    max_tokens_per_run: int = 200_000
+    wall_clock_budget_s: float = 270.0
 
-    react_max_iters: int = 4
+    react_max_iters: int = 8
     rag_top_k: int = 5
-    max_candidates_per_search: int = 6
-    max_validations_per_run: int = 12
+    max_candidates_per_search: int = 12
+    max_validations_per_run: int = 60
 
     # Places judged per AccessibilityValidator call. Batching is the largest
-    # single saving in the system: one call for three places instead of three.
-    validation_batch_size: int = 3
+    # single saving in the system: one call for five places instead of five.
+    # Raising it further starts to risk the model blurring evidence between
+    # places, which is the one error this module must not make.
+    validation_batch_size: int = 5
+
+    # A long trip needs a long itinerary. 2000 tokens truncated a two-week
+    # plan, so the ceiling scales with trip length up to this cap.
+    planner_max_output_tokens: int = 8_000
 
     # Headroom kept back for SchedulePlanner after a soft limit trips.
-    reserve_llm_calls: int = 3
-    reserve_wall_clock_s: float = 30.0
-    reserve_tokens: int = 8_000
+    reserve_llm_calls: int = 4
+    reserve_wall_clock_s: float = 40.0
+    reserve_tokens: int = 20_000
 
     llm_timeout_s: float = 60.0
     llm_max_retries: int = 2

@@ -14,8 +14,15 @@ from typing import Any, Callable
 
 from .repository import Place, Repository, RepositoryError, travel_estimate
 
-MAX_LIMIT = 8
+# Google Text Search returns at most 20 results on one page, so that is the
+# natural ceiling for a single tool call.
+MAX_LIMIT = 20
 MAX_PROVIDER_RESULTS = 20
+
+# Pairwise estimates are quadratic and land in the planner's prompt. Past this
+# many places the planner groups days by the `area` label on each candidate
+# instead, which costs nothing and is good enough for "don't zig-zag".
+MAX_MATRIX_PLACES = 16
 
 TRAVEL_MODES = ("wheelchair_walk", "accessible_transit", "accessible_taxi")
 
@@ -143,7 +150,7 @@ def travel_matrix(places: list[Place], mode: str = "accessible_transit") -> list
     Capped at a modest number of places because this is quadratic and lands in
     a prompt; beyond that the planner gets geography by area label instead.
     """
-    subset = places[:8]
+    subset = places[:MAX_MATRIX_PLACES]
     matrix = []
     for i, a in enumerate(subset):
         for b in subset[i + 1 :]:
