@@ -42,42 +42,81 @@ def _demo_data_warning(settings: Settings) -> str | None:
 
 
 def _render_hotel(state: RunState) -> str | None:
-    """The hotel is a separate section, not an itinerary row.
+    """Render every accommodation segment separately from itinerary activities.
 
     A traveller who asked for a verified accessible hotel needs to see its
     verdict prominently, not buried inside day one.
     """
     profile = state.profile or {}
-    hotel = state.candidates.get(state.selected_hotel_id or "")
-    if hotel is not None and hotel.verdict == "flagged":
-        # Flagged hotels are explained under Considered but not scheduled;
-        # presenting one as the selected stay would contradict that decision.
-        hotel = None
-
-    if hotel is None:
-        if profile.get("needs_hotel"):
-            return (
-                "## Where you'll stay\n"
-                "- No hotel without known accessibility concerns could be selected. "
-                "Ask me again with your dates and budget, or tell me an area you prefer."
-            )
+    if not profile.get("needs_hotel"):
         return None
 
-    detail = hotel.verdict_detail or {}
-    lines = [
-        "## Where you'll stay",
-        f"- **{hotel.name}** {MARK.get(hotel.verdict or 'unknown', '')}".rstrip(),
-    ]
-    if detail.get("summary"):
-        lines.append(f"  - {detail['summary']}")
-    for condition in (detail.get("conditions") or [])[:2]:
-        lines.append(f"  - Condition: {condition}")
-    for concern in (detail.get("concerns") or [])[:2]:
-        lines.append(f"  - Note: {concern}")
-    if hotel.verdict != "supported":
+    selected = list(state.selected_hotel_stays)
+    if not selected and state.selected_hotel_id:
+        selected = [{
+            "place_id": state.selected_hotel_id,
+            "location": profile.get("destination") or "",
+            "start_day": 1,
+            "end_day": max(1, int(profile.get("trip_days") or 1)),
+        }]
+
+    lines = ["## Where you'll stay"]
+    planned_stays = state.shape.get("hotel_stays") or selected
+    for planned in sorted(planned_stays, key=lambda value: int(value.get("start_day") or 1)):
+        start_day = max(1, int(planned.get("start_day") or 1))
+        end_day = max(start_day, int(planned.get("end_day") or start_day))
+        days = f"Day {start_day}" if start_day == end_day else f"Days {start_day}–{end_day}"
+        location = str(planned.get("location") or "").strip()
+        matching = [
+            stay
+            for stay in selected
+            if int(stay.get("start_day") or 1) == start_day
+            and int(stay.get("end_day") or start_day) == end_day
+            and (
+                not location
+                or str(stay.get("location") or "").casefold() == location.casefold()
+            )
+        ]
+        hotel = next(
+            (
+                candidate
+                for stay in matching
+                if (candidate := state.candidates.get(str(stay.get("place_id") or "")))
+                is not None
+                and candidate.verdict != "flagged"
+            ),
+            None,
+        )
+        if hotel is None:
+            location = location or "this location"
+            lines.append(
+                f"- **{days} — {location}: no suitable hotel selected.** "
+                "Ask again with dates, budget, or a preferred area."
+            )
+            continue
+
+        location = location or str(hotel.brief.get("city") or "").strip()
+        heading = f"{days} — {location}: {hotel.name}" if location else f"{days}: {hotel.name}"
         lines.append(
-            "  - Confirm the specific adapted room, doorway widths and bathroom layout "
-            "directly with the property before booking."
+            f"- **{heading}** {MARK.get(hotel.verdict or 'unknown', '')}".rstrip()
+        )
+        detail = hotel.verdict_detail or {}
+        if detail.get("summary"):
+            lines.append(f"  - {detail['summary']}")
+        for condition in (detail.get("conditions") or [])[:2]:
+            lines.append(f"  - Condition: {condition}")
+        for concern in (detail.get("concerns") or [])[:2]:
+            lines.append(f"  - Note: {concern}")
+        if hotel.verdict != "supported":
+            lines.append(
+                "  - Confirm the specific adapted room, doorway widths and bathroom layout "
+                "directly with the property before booking."
+            )
+
+    if len(lines) == 1:
+        lines.append(
+            "- No hotel without known accessibility concerns could be selected. "
+            "Ask me again with your dates and budget, or tell me an area you prefer."
         )
     return "\n".join(lines)
 
@@ -140,7 +179,14 @@ def render_clarification(state: RunState) -> str:
 def render_itinerary(state: RunState, trace: RunTrace, settings: Settings) -> str:
     itinerary: dict[str, Any] = state.itinerary or {}
     profile = state.profile or {}
-    destination = profile.get("destination") or "your destination"
+    plan_locations = state.shape.get("search_locations") or []
+    destination = (
+        " and ".join(plan_locations)
+        if len(plan_locations) <= 2 and plan_locations
+        else ", ".join(plan_locations)
+        if plan_locations
+        else profile.get("destination") or "your destination"
+    )
     days = itinerary.get("days") or []
 
     title = f"# Accessible itinerary: {destination}"
@@ -162,8 +208,19 @@ def render_itinerary(state: RunState, trace: RunTrace, settings: Settings) -> st
 
     for day in days:
         header = f"\n## Day {day.get('day', '?')}"
+        planned_day = next(
+            (
+                value
+                for value in (state.shape.get("days") or [])
+                if value.get("day") == day.get("day")
+            ),
+            {},
+        )
+        location = str(planned_day.get("location") or "").strip()
+        if location:
+            header += f" — {location}"
         if day.get("theme"):
-            header += f" - {day['theme']}"
+            header += f": {day['theme']}"
         parts.append(header)
 
         for item in day.get("items") or []:
@@ -213,9 +270,10 @@ def render_itinerary(state: RunState, trace: RunTrace, settings: Settings) -> st
         if isinstance(item, dict)
         and str(item.get("place_id") or "") in state.candidates
     }
-    selected_hotel = state.candidates.get(str(state.selected_hotel_id or ""))
-    if selected_hotel is not None and selected_hotel.verdict != "flagged":
-        scheduled_ids.add(selected_hotel.place_id)
+    for hotel_id in state.selected_hotel_ids:
+        selected_hotel = state.candidates.get(hotel_id)
+        if selected_hotel is not None and selected_hotel.verdict != "flagged":
+            scheduled_ids.add(selected_hotel.place_id)
     scheduled = [state.candidates[place_id] for place_id in scheduled_ids]
     counts = {
         verdict: sum(1 for candidate in scheduled if candidate.verdict == verdict)

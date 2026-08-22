@@ -34,7 +34,36 @@ CHOICES = {
     FINISH,
 }
 
-MAX_FINDER_ROUNDS = 3
+MAX_FINDER_ROUNDS = 4
+
+
+def _discovery_gaps(state: RunState) -> tuple[dict[str, int], list[str]]:
+    """Return the missing schedulable activities and uncovered hotel locations."""
+    usable_by_location: dict[str, int] = {}
+    for candidate in state.candidates.values():
+        if candidate.kind != "activity" or candidate.verdict == "flagged":
+            continue
+        location = str(candidate.brief.get("city") or state.destination).strip().casefold()
+        usable_by_location[location] = usable_by_location.get(location, 0) + 1
+    missing_activities = {
+        location: target - usable_by_location.get(location.casefold(), 0)
+        for location, target in state.activity_targets_by_location.items()
+        if target - usable_by_location.get(location.casefold(), 0) > 0
+    }
+
+    covered = {
+        str(stay.get("location") or "").strip().casefold()
+        for stay in state.selected_hotel_stays
+        if stay.get("place_id")
+        and state.candidates.get(str(stay.get("place_id"))) is not None
+        and state.candidates[str(stay["place_id"])].verdict != "flagged"
+    }
+    missing_hotels = [
+        str(stay.get("location") or "").strip()
+        for stay in (state.shape.get("hotel_stays") or [])
+        if str(stay.get("location") or "").strip().casefold() not in covered
+    ]
+    return missing_activities, missing_hotels
 
 
 class Decision:
@@ -116,6 +145,38 @@ def _legalize(state: RunState, choice: str) -> tuple[str, str | None]:
 
 
 def decide(ctx: AgentContext, state: RunState) -> Decision:
+    if (
+        state.itinerary is None
+        and state.profile is not None
+        and state.plan_shape is not None
+        and state.finder_rounds < MAX_FINDER_ROUNDS
+    ):
+        activity_gaps, missing_hotels = _discovery_gaps(state)
+        if activity_gaps or missing_hotels:
+            locations = ", ".join(state.shape.get("search_locations") or [])
+            activity_text = ", ".join(
+                f"{count} in {location}" for location, count in activity_gaps.items()
+            ) or "no additional activities"
+            hotel_text = (
+                f" Find one hotel in each uncovered stay location: {', '.join(missing_hotels)}."
+                if missing_hotels
+                else ""
+            )
+            instruction = (
+                f"Search the planned locations ({locations}) for these missing distinct "
+                f"activities: {activity_text}.{hotel_text} Do not select previously checked places."
+            )
+            state.log("Supervisor: -> ActivityLogisticsFinder (discovery gaps)")
+            ctx.trace.note(
+                "Supervisor routed to ActivityLogisticsFinder deterministically "
+                "(the day plan or hotel stays still lacked coverage); no model call was needed."
+            )
+            return Decision(
+                next_module=ACTIVITY_LOGISTICS_FINDER,
+                instruction=instruction,
+                reasoning="The geographic day plan still needs place coverage.",
+            )
+
     # A concern is not an acceptable first-choice itinerary stop. Give live
     # discovery one bounded replacement round before planning, and tell the
     # finder exactly which candidates must not be selected again.
@@ -186,7 +247,9 @@ def decide(ctx: AgentContext, state: RunState) -> Decision:
         SUPERVISOR,
         SUPERVISOR_SYSTEM,
         supervisor_user_prompt(state.summary_for_supervisor(ctx.trace)),
-        max_tokens=300,
+        # A 21-day plan_shape contains 21 small day objects. The former
+        # 300-token ceiling could truncate that JSON before discovery began.
+        max_tokens=1200,
     )
     ctx.trace.supervisor_turns += 1
 
@@ -195,9 +258,10 @@ def decide(ctx: AgentContext, state: RunState) -> Decision:
     if state.profile is not None and state.plan_shape is None:
         state.plan_shape = normalize_plan_shape(raw.get("plan_shape"), state.profile)
         shape = state.plan_shape
+        activity_target = sum(day["activities"] for day in shape["days"])
         state.log(
-            f"Supervisor: plan shape {shape['activities_per_day']}/day, "
-            f"{shape['day_start']}-{shape['day_end']}"
+            f"Supervisor: plan shape {activity_target} activities "
+            f"across {len(shape['days'])} days, {shape['day_start']}-{shape['day_end']}"
         )
 
     choice = str(raw.get("next_module") or "").strip()

@@ -84,6 +84,8 @@ class Place:
         }
         if self.area:
             brief["area"] = self.area
+        if self.city:
+            brief["city"] = self.city
         if unknown:
             brief["unknown_claims"] = unknown
         return brief

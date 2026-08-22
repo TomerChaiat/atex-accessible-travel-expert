@@ -90,6 +90,10 @@ def _is_accommodation_change(
         candidate.kind == "hotel"
         and _normalise_label(item.get("kind")) == "stay"
         and candidate.place_id != state.selected_hotel_id
+        and (
+            not state.selected_hotel_stays
+            or candidate.place_id in state.selected_hotel_ids
+        )
     )
 
 
@@ -468,6 +472,16 @@ def _enforce_verdicts(
     for index, day in enumerate(days, start=1):
         if not isinstance(day, dict):
             continue
+        day_number = day.get("day") or index
+        day_shape = next(
+            (
+                value
+                for value in (shape.get("days") or [])
+                if value.get("day") == day_number
+            ),
+            {},
+        )
+        planned_location = str(day_shape.get("location") or "").strip()
         items = day.get("items") if isinstance(day.get("items"), list) else []
         clean_items = []
         for item in items:
@@ -476,6 +490,18 @@ def _enforce_verdicts(
             place_id = item.get("place_id")
             kind = str(item.get("kind") or "activity")
             candidate = state.candidates.get(str(place_id or ""))
+            candidate_city = str((candidate.brief if candidate else {}).get("city") or "")
+            if (
+                candidate is not None
+                and candidate_city
+                and planned_location
+                and candidate_city.casefold() != planned_location.casefold()
+            ):
+                state.log(
+                    f"SchedulePlanner: dropped {candidate.name} from day {day_number}; "
+                    f"it belongs to {candidate_city}, not {planned_location}"
+                )
+                continue
             if _is_generic_placeholder(item, candidate):
                 # Generic downtime has no venue and therefore no accessibility
                 # claim. Also detach any candidate ID the model borrowed.
@@ -531,7 +557,7 @@ def _enforce_verdicts(
         )
         _align_item_times(clean_items, shape.get("day_start"))
         day["items"] = clean_items
-        day["day"] = day.get("day") or index
+        day["day"] = day_number
         clean_days.append(day)
 
     itinerary["days"] = clean_days
@@ -582,9 +608,9 @@ def _enforce_verdicts(
         for entry in (itinerary.get("not_scheduled") or [])
         if not (
             isinstance(entry, dict)
-            and entry.get("place_id") == state.selected_hotel_id
-            and state.candidates.get(str(state.selected_hotel_id or "")) is not None
-            and state.candidates[str(state.selected_hotel_id)].verdict != "flagged"
+            and str(entry.get("place_id") or "") in state.selected_hotel_ids
+            and state.candidates.get(str(entry.get("place_id") or "")) is not None
+            and state.candidates[str(entry.get("place_id"))].verdict != "flagged"
         )
     ]
     listed_ids = {
@@ -681,6 +707,7 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
             travel_matrix=matrix,
             instruction=instruction or "Build the itinerary now.",
             plan_shape=state.shape,
+            selected_hotel_stays=state.selected_hotel_stays,
         ),
         max_tokens=output_tokens,
     )

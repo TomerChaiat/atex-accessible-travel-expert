@@ -71,9 +71,34 @@ def _ids_seen(observations: list[dict[str, Any]]) -> list[str]:
     return seen
 
 
+def _candidate_memory(observations: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Compact every observed place so exact IDs survive the 3-turn window."""
+    remembered: dict[str, dict[str, str]] = {}
+    for observation in observations:
+        result = observation.get("result") or {}
+        rows = result.get("results") if isinstance(result, dict) else None
+        if not isinstance(rows, list):
+            rows = [result] if isinstance(result, dict) and result.get("id") else []
+        searched_city = str((observation.get("args") or {}).get("city") or "")
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("id"):
+                continue
+            place_id = str(row["id"])
+            remembered.setdefault(
+                place_id,
+                {
+                    "id": place_id,
+                    "name": str(row.get("name") or ""),
+                    "kind": str(row.get("kind") or "activity"),
+                    "city": str(row.get("city") or searched_city),
+                },
+            )
+    return list(remembered.values())[:80]
+
+
 def _finish_selection(
     args: dict[str, Any], observations: list[dict[str, Any]]
-) -> tuple[list[str], list[str], str | None]:
+) -> tuple[list[str], list[str], list[dict[str, str]]]:
     """Accept only exact IDs that came from a provider observation."""
     observed_ids = set(_ids_seen(observations))
     activity_ids = [
@@ -86,16 +111,89 @@ def _finish_selection(
         for value in (args.get("selected_restaurant_ids") or [])
         if str(value) in observed_ids
     ]
+    hotels: list[dict[str, str]] = []
+    raw_hotels = args.get("selected_hotels")
+    if isinstance(raw_hotels, list):
+        for value in raw_hotels:
+            if not isinstance(value, dict):
+                continue
+            place_id = str(value.get("place_id") or "")
+            if place_id in observed_ids and place_id not in {
+                hotel["place_id"] for hotel in hotels
+            }:
+                hotels.append(
+                    {
+                        "place_id": place_id,
+                        "location": str(value.get("location") or "").strip(),
+                    }
+                )
+    # Accept the old single-hotel shape from saved prompts or older models.
     raw_hotel_id = args.get("selected_hotel_id")
-    hotel_id = (
-        str(raw_hotel_id)
-        if raw_hotel_id and str(raw_hotel_id) in observed_ids
-        else None
+    if raw_hotel_id and str(raw_hotel_id) in observed_ids and not hotels:
+        hotels.append({"place_id": str(raw_hotel_id), "location": ""})
+    return activity_ids, restaurant_ids, hotels
+
+
+def _record_hotel_stay(
+    state: RunState, place: Place, requested_location: str = ""
+) -> None:
+    if place.id in state.selected_hotel_ids:
+        return
+    location = requested_location.strip() or str(place.city or "").strip()
+    planned_stays = state.shape.get("hotel_stays") or []
+
+    def usable_selected(selected: dict[str, Any]) -> bool:
+        candidate = state.candidates.get(str(selected.get("place_id") or ""))
+        return candidate is not None and candidate.verdict != "flagged"
+
+    matching = next(
+        (
+            stay
+            for stay in planned_stays
+            if str(stay.get("location") or "").casefold() == location.casefold()
+            and not any(
+                selected.get("place_id")
+                and usable_selected(selected)
+                and str(selected.get("location") or "").casefold() == location.casefold()
+                for selected in state.selected_hotel_stays
+            )
+        ),
+        None,
     )
-    return activity_ids, restaurant_ids, hotel_id
+    if matching is None:
+        matching = next(
+            (
+                stay
+                for stay in planned_stays
+                if not any(
+                    selected.get("start_day") == stay.get("start_day")
+                    and selected.get("end_day") == stay.get("end_day")
+                    and usable_selected(selected)
+                    for selected in state.selected_hotel_stays
+                )
+            ),
+            {},
+        )
+    state.selected_hotel_stays.append(
+        {
+            "place_id": place.id,
+            "location": str(matching.get("location") or location or place.city or ""),
+            "start_day": matching.get("start_day", 1),
+            "end_day": matching.get(
+                "end_day", max(1, int((state.profile or {}).get("trip_days") or 1))
+            ),
+        }
+    )
+    if state.selected_hotel_id is None:
+        state.selected_hotel_id = place.id
 
 
-def _select(ctx: AgentContext, state: RunState, ids: list[str], hotel_id: str | None) -> int:
+def _select(
+    ctx: AgentContext,
+    state: RunState,
+    ids: list[str],
+    hotels: list[dict[str, str]],
+) -> int:
     added = 0
     for place_id in ids:
         try:
@@ -109,7 +207,10 @@ def _select(ctx: AgentContext, state: RunState, ids: list[str], hotel_id: str | 
             continue
         _register(state, place)
         added += 1
-    if hotel_id:
+    for hotel_selection in hotels:
+        hotel_id = hotel_selection.get("place_id")
+        if not hotel_id:
+            continue
         try:
             hotel = ctx.repo.get_place(hotel_id)
         except RepositoryError as exc:
@@ -117,7 +218,7 @@ def _select(ctx: AgentContext, state: RunState, ids: list[str], hotel_id: str | 
             hotel = None
         if hotel is not None and hotel.kind == "hotel":
             _register(state, hotel)
-            state.selected_hotel_id = hotel.id
+            _record_hotel_stay(state, hotel, hotel_selection.get("location") or "")
     return added
 
 
@@ -128,8 +229,7 @@ def activities_needed(state: RunState) -> int:
     to infer this produced itineraries with one short activity on most days, so
     the number is computed and stated outright.
     """
-    days = max(1, int((state.profile or {}).get("trip_days") or 3))
-    return days * max(1, int(state.shape["activities_per_day"]))
+    return state.activity_target
 
 
 def _fallback_select(ctx: AgentContext, state: RunState, observations) -> int:
@@ -138,7 +238,8 @@ def _fallback_select(ctx: AgentContext, state: RunState, observations) -> int:
     ids = _ids_seen(observations)
     profile = state.profile or {}
 
-    activities, hotels = [], []
+    activities_by_location: dict[str, list[str]] = {}
+    hotels: list[dict[str, str]] = []
     for place_id in ids:
         try:
             place = ctx.repo.get_place(place_id)
@@ -148,12 +249,25 @@ def _fallback_select(ctx: AgentContext, state: RunState, observations) -> int:
         if place is None:
             continue
         if place.kind == "hotel":
-            hotels.append(place.id)
+            hotels.append({"place_id": place.id, "location": str(place.city or "")})
         elif place.kind != "restaurant" or _wants_restaurants(state):
-            activities.append(place.id)
+            location = str(place.city or state.destination).strip().casefold()
+            activities_by_location.setdefault(location, []).append(place.id)
 
-    hotel_id = hotels[0] if (hotels and profile.get("needs_hotel")) else None
-    return _select(ctx, state, activities[: wanted + 4], hotel_id)
+    needed_hotels = len(state.shape.get("hotel_stays") or [])
+    selected_hotels = hotels[:needed_hotels] if profile.get("needs_hotel") else []
+    selected_activities: list[str] = []
+    for location, target in state.activity_targets_by_location.items():
+        selected_activities.extend(
+            activities_by_location.get(location.casefold(), [])[: target + 2]
+        )
+    if not selected_activities:
+        selected_activities = [
+            place_id
+            for values in activities_by_location.values()
+            for place_id in values
+        ][: wanted + 4]
+    return _select(ctx, state, selected_activities, selected_hotels)
 
 
 def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
@@ -183,8 +297,11 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
             FINDER_SYSTEM,
             finder_user_prompt(
                 profile,
+                state.shape,
+                state.selected_hotel_stays,
                 instruction,
                 observations[-OBSERVATION_WINDOW:],
+                _candidate_memory(observations),
                 turns_left,
                 activities_needed=target,
                 already_selected=len(previously_checked),
@@ -197,9 +314,9 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
         args = action.get("args") if isinstance(action.get("args"), dict) else {}
 
         if tool_name == "finish":
-            activity_ids, restaurant_ids, hotel_id = _finish_selection(args, observations)
+            activity_ids, restaurant_ids, hotels = _finish_selection(args, observations)
             added = _select(
-                ctx, state, activity_ids + restaurant_ids, hotel_id
+                ctx, state, activity_ids + restaurant_ids, hotels
             )
             state.log(f"ActivityLogisticsFinder: selected {added} places in {iteration + 1} turns")
             finished = True

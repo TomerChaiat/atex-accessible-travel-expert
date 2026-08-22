@@ -60,7 +60,9 @@ class RunResult:
         """The slice worth persisting for a follow-up turn."""
         return {
             "profile": self.state.profile,
+            "plan_shape": self.state.plan_shape,
             "selected_hotel_id": self.state.selected_hotel_id,
+            "selected_hotel_stays": self.state.selected_hotel_stays,
             "candidates": [
                 {
                     "place_id": c.place_id,
@@ -83,7 +85,19 @@ def restore_state(request: str, session_id: str | None, saved: dict[str, Any] | 
         return state
 
     state.profile = saved.get("profile")
+    state.plan_shape = saved.get("plan_shape")
     state.selected_hotel_id = saved.get("selected_hotel_id")
+    state.selected_hotel_stays = list(saved.get("selected_hotel_stays") or [])
+    if not state.selected_hotel_stays and state.selected_hotel_id:
+        # Backward compatibility with sessions created before multi-city stays.
+        state.selected_hotel_stays = [
+            {
+                "place_id": state.selected_hotel_id,
+                "location": (state.profile or {}).get("destination") or "",
+                "start_day": 1,
+                "end_day": max(1, int((state.profile or {}).get("trip_days") or 1)),
+            }
+        ]
     state.history = list(saved.get("history") or [])
     state.turn_index = int(saved.get("turn_index") or 0) + 1
 

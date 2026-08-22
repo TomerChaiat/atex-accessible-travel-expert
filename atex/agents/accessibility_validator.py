@@ -290,7 +290,7 @@ def validate_batch(
     nothing.
     """
     needs = state.required_needs or DEFAULT_NEEDS
-    city = state.destination or (state.profile or {}).get("destination") or ""
+    primary_city = state.destination or (state.profile or {}).get("destination") or ""
     profile = state.profile or {}
     mobility = profile.get("mobility") or {}
     party_size = int(profile.get("party_size") or 1)
@@ -307,6 +307,9 @@ def validate_batch(
     evidence_ids_by_place: dict[str, set[str]] = {}
 
     for candidate in batch:
+        # Multi-city candidates must be retrieved inside their own destination;
+        # using the primary city here would hide evidence for every day trip.
+        city = str(candidate.brief.get("city") or primary_city)
         specific, general = retrieve_evidence(ctx, candidate, city, needs)
         if not specific:
             ctx.trace.note(

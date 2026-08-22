@@ -79,7 +79,7 @@ the trace. A test enforces this.
 |---|---|---|
 | `Supervisor` | Routing, invariants, trip shape, replanning, clarification | 1 call per turn |
 | `UserProfileAgent` | Free text → structured profile | 1 call |
-| `ActivityLogisticsFinder` | ReAct over live Google Places results | ≤ 8 calls per round |
+| `ActivityLogisticsFinder` | ReAct over live Google Places results, across planned nearby locations | ≤ 8 calls per round, ≤ 4 rounds |
 | `AccessibilityValidator` | RAG verdicts with cited evidence | 1 call per 5 places |
 | `SchedulePlanner` | Day-by-day itinerary | 1 call |
 

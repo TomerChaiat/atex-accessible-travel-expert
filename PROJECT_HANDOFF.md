@@ -80,33 +80,33 @@ The `.env.example` file should exist locally for documentation but remain ignore
 16. Google Place IDs must be copied exactly from provider observations. Invalid, altered, or obsolete IDs should be skipped without crashing the itinerary.
 17. Do not expose Pinecone confidence fields or `classification_version` in the application or UI.
 18. Accessibility evidence explanations should be concise but complete and must not end with a truncated sentence.
-19. A hotel is never an activity. It belongs in "Where you'll stay", so a trip
-    that keeps one hotel throughout has no hotel row in any day — scheduling
-    it duplicates the section and, with its zero duration, collides with the
-    next item's start time. The one exception is a genuine change of
-    accommodation: a hotel other than the selected one, on a row explicitly
-    marked `kind: "stay"`, is kept as the day the traveller moves in. A move
-    still passes through normal verdict enforcement, so a hotel with
-    accessibility concerns cannot enter the itinerary this way.
-    - Known limitation: `selected_hotel_id` is a single value and the finder
-      returns one hotel, so a multi-hotel trip is not yet plannable
-      end-to-end. The `stay` row is the seam that change would build on.
+19. A hotel is never an attraction. It belongs in "Where you'll stay". A
+    multi-location trip has one selected hotel per contiguous location range,
+    and the response names the location and inclusive day range for every
+    stay. A genuine hotel change may also appear once on its move-in day as
+    `kind: "stay"`. Every hotel still passes through normal verdict enforcement,
+    so one with accessibility concerns is replaced when possible and never
+    presented as the selected stay.
 20. The GUI must offer a one-click download of the full run logs, covering
     every turn in the conversation.
 21. How full a day is, is the Supervisor's decision, not a fixed table. It
-    reads the request and sets `plan_shape` once — `activities_per_day`,
-    `day_start`, `day_end` — which the finder uses to size its search and the
-    planner uses to fill each day. "More than two attractions per day" means at
-    least three; "finishing late" means an evening `day_end`; "relaxed" means
-    fewer stops. When the traveller says nothing, the Supervisor still decides
-    something sensible. `activities_per_day` is a target to hit, not a ceiling
-    to undershoot: never leave a day short while candidates remain unused.
+    reads the request and sets `plan_shape.days` once, with an independent
+    location and attraction target for every day plus `day_start` and
+    `day_end`. Arrival, transfer, and recovery days can be lighter than the
+    others. The finder sizes discovery per location and the planner must honor
+    each individual target rather than repeat one number across the trip.
 22. Never show a provider place ID to the traveller. "Confirm before you
     travel" carries the venue name and what to check, nothing else.
 23. "Considered but not scheduled" is for places actively rejected — a stated
     accessibility concern, an unreachable location, a duplicate. A merely
     unverified place that was not needed is surplus, not a rejection, and must
     not be listed. Cap the section and collapse the remainder into one count.
+24. Unless the traveller explicitly says to remain only in the named
+    location(s), the Supervisor may devote days to realistic nearby cities or
+    regional day trips. Explicit destinations must all be covered, and
+    `requested_locations_only` is a hard boundary. Discovery is capped at four
+    Finder rounds and is repeated while a planned location lacks attractions
+    or hotel coverage.
 
 ## Quick examples
 
@@ -124,4 +124,3 @@ The `.env.example` file should exist locally for documentation but remain ignore
 - Do not commit or push for me.
 - When finished, tell me exactly which files changed and provide the precise `git add`, `git commit`, and `git push` commands so I can push them myself.
 - Keep explanations practical and easy to follow.
-

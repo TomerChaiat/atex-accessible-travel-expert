@@ -8,6 +8,7 @@ about something we can simply guarantee.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .. import USER_PROFILE_AGENT
@@ -39,6 +40,19 @@ MAX_TRIP_DAYS = 21
 # Nights away from home need somewhere to sleep. Below this, a day trip is
 # plausible and accommodation should not be assumed.
 HOTEL_ASSUMED_FROM_DAYS = 2
+
+STRICT_LOCATION_PATTERNS = (
+    r"\b(?:only|exclusively|entirely)\s+in\b",
+    r"\bonly\s+(?:visit|explore|stay|remain)\b",
+    r"\bstay\s+(?:only\s+)?within\b",
+    r"\bdo\s+not\s+leave\b",
+    r"\bno\s+other\s+(?:cities|locations|places)\b",
+    r"\bno\s+(?:nearby\s+)?day\s*trips?\b",
+)
+
+
+def _strict_location_requested(request: str) -> bool:
+    return any(re.search(pattern, request, re.I) for pattern in STRICT_LOCATION_PATTERNS)
 
 
 def _as_int(value: Any, default: int | None = None) -> int | None:
@@ -89,8 +103,27 @@ def normalize_profile(raw: dict[str, Any]) -> dict[str, Any]:
         needs_hotel = trip_days >= HOTEL_ASSUMED_FROM_DAYS
 
     destination = raw.get("destination")
+    destination = destination.strip() if isinstance(destination, str) else None
+    destinations: list[str] = []
+    supplied_destinations = raw.get("destinations")
+    if isinstance(supplied_destinations, list):
+        for value in supplied_destinations:
+            location = str(value or "").strip()[:80]
+            if location and location.casefold() not in {v.casefold() for v in destinations}:
+                destinations.append(location)
+    if destination and destination.casefold() not in {v.casefold() for v in destinations}:
+        destinations.insert(0, destination)
+    destinations = destinations[:4]
+    if destination is None and destinations:
+        destination = destinations[0]
+
     return {
-        "destination": destination.strip() if isinstance(destination, str) else None,
+        "destination": destination,
+        "destinations": destinations,
+        # False is the normal case: the Supervisor may propose a realistic
+        # nearby city or day trip. It becomes true only when the traveller says
+        # to remain exclusively in the named locations.
+        "requested_locations_only": bool(raw.get("requested_locations_only")),
         "country": raw.get("country"),
         "trip_days": trip_days,
         "party_size": _as_int(raw.get("party_size")) or 1,
@@ -125,6 +158,10 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
         max_tokens=700,
     )
     state.profile = normalize_profile(raw)
+    if _strict_location_requested(state.request):
+        # This is a hard user boundary, so enforce it even if profile extraction
+        # omitted the boolean.
+        state.profile["requested_locations_only"] = True
     destination = state.profile["destination"] or "no destination given"
     state.log(
         f"UserProfileAgent: profile built for {destination}, "

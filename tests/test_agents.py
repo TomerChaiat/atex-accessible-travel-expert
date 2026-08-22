@@ -31,8 +31,10 @@ from atex.agents.accessibility_validator import (  # noqa: E402
     _mentions_candidate,
     _sanitize,
     retrieve_evidence,
+    validate_batch,
 )
 from atex.agents.activity_finder import (  # noqa: E402
+    _candidate_memory,
     _finish_selection,
     _wants_restaurants,
     activities_needed,
@@ -44,7 +46,11 @@ from atex.agents.schedule_planner import (  # noqa: E402
     _flagged_reason,
     _parse_time,
 )
-from atex.agents.user_profile import MAX_TRIP_DAYS, normalize_profile  # noqa: E402
+from atex.agents.user_profile import (  # noqa: E402
+    MAX_TRIP_DAYS,
+    _strict_location_requested,
+    normalize_profile,
+)
 from atex.config import load_settings  # noqa: E402
 from atex.graph import run_agent  # noqa: E402
 from atex.httpjson import HttpError, extract_json_object  # noqa: E402
@@ -112,6 +118,21 @@ class TestProfileNormalisation(unittest.TestCase):
         profile = normalize_profile({"trip_days": "banana", "interests": None})
         self.assertIsInstance(profile["trip_days"], int)
         self.assertEqual(profile["interests"], [])
+
+    def test_multiple_requested_locations_and_strict_scope_are_preserved(self):
+        profile = normalize_profile(
+            {
+                "destination": "Haifa",
+                "destinations": ["Haifa", "Tel Aviv", "haifa"],
+                "requested_locations_only": True,
+            }
+        )
+        self.assertEqual(profile["destinations"], ["Haifa", "Tel Aviv"])
+        self.assertTrue(profile["requested_locations_only"])
+
+    def test_explicit_no_day_trip_language_is_a_hard_location_boundary(self):
+        self.assertTrue(_strict_location_requested("Stay only in Haifa; no day trips."))
+        self.assertFalse(_strict_location_requested("Stay in Haifa and suggest nearby trips."))
 
     def test_a_wheelchair_implies_limited_walking(self):
         profile = normalize_profile({"mobility": {"wheelchair": "manual"}})
@@ -314,6 +335,25 @@ class TestValidatorEvidencePrivacy(unittest.TestCase):
         )
         self.assertEqual(result["verdict"], "flagged")
 
+    def test_multi_city_candidates_retrieve_evidence_in_their_own_city(self):
+        state = RunState("Haifa and Tel Aviv")
+        state.profile = {"destination": "Haifa"}
+        candidates = [
+            Candidate("h", "Haifa Place", "activity", {"city": "Haifa"}),
+            Candidate("t", "Tel Aviv Place", "activity", {"city": "Tel Aviv"}),
+        ]
+        ctx = SimpleNamespace(trace=RunTrace(load_settings().budget))
+        with patch(
+            "atex.agents.accessibility_validator.retrieve_evidence",
+            return_value=([], []),
+        ) as retrieve:
+            validate_batch(ctx, state, candidates)
+
+        self.assertEqual(
+            [call.args[2] for call in retrieve.call_args_list],
+            ["Haifa", "Tel Aviv"],
+        )
+
 
 class TestCandidateIntent(unittest.TestCase):
     def test_restaurants_are_not_requested_implicitly(self):
@@ -333,7 +373,7 @@ class TestCandidateIntent(unittest.TestCase):
                 "result": {"results": [{"id": "gmp:ChIJ-valid"}]},
             }
         ]
-        activities, restaurants, hotel = _finish_selection(
+        activities, restaurants, hotels = _finish_selection(
             {
                 "selected_activity_ids": ["gmp:ChIJ-valid", "gmp:i_modified"],
                 "selected_restaurant_ids": ["gmp:invented-restaurant"],
@@ -343,7 +383,55 @@ class TestCandidateIntent(unittest.TestCase):
         )
         self.assertEqual(activities, ["gmp:ChIJ-valid"])
         self.assertEqual(restaurants, [])
-        self.assertIsNone(hotel)
+        self.assertEqual(hotels, [])
+
+    def test_finish_accepts_multiple_exact_observed_hotels(self):
+        observations = [
+            {
+                "tool": "search_hotels",
+                "args": {"city": "Haifa"},
+                "result": {"results": [{"id": "hotel-haifa", "kind": "hotel"}]},
+            },
+            {
+                "tool": "search_hotels",
+                "args": {"city": "Tel Aviv"},
+                "result": {"results": [{"id": "hotel-tel-aviv", "kind": "hotel"}]},
+            },
+        ]
+        _, _, hotels = _finish_selection(
+            {
+                "selected_hotels": [
+                    {"place_id": "hotel-haifa", "location": "Haifa"},
+                    {"place_id": "hotel-tel-aviv", "location": "Tel Aviv"},
+                    {"place_id": "invented", "location": "Jerusalem"},
+                ]
+            },
+            observations,
+        )
+        self.assertEqual(
+            hotels,
+            [
+                {"place_id": "hotel-haifa", "location": "Haifa"},
+                {"place_id": "hotel-tel-aviv", "location": "Tel Aviv"},
+            ],
+        )
+
+    def test_compact_memory_keeps_ids_from_older_city_searches(self):
+        observations = [
+            {
+                "tool": "search_activities",
+                "args": {"city": f"City {index}"},
+                "result": {
+                    "results": [
+                        {"id": f"place-{index}", "name": f"Place {index}", "kind": "activity"}
+                    ]
+                },
+            }
+            for index in range(6)
+        ]
+        memory = _candidate_memory(observations)
+        self.assertEqual(memory[0]["id"], "place-0")
+        self.assertEqual(memory[-1]["city"], "City 5")
 
 
 class TestGooglePlacesRepository(unittest.TestCase):
@@ -633,6 +721,44 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
         self.assertEqual(items[0]["accessibility"], "supported")
         # A zero-duration stay must not collide with what follows it.
         self.assertNotEqual(items[0]["time"], items[1]["time"])
+
+    def test_where_youll_stay_lists_every_location_and_day_range(self):
+        state = RunState("Four days in Haifa and Tel Aviv")
+        state.profile = {
+            "destination": "Haifa",
+            "destinations": ["Haifa", "Tel Aviv"],
+            "trip_days": 4,
+            "needs_hotel": True,
+        }
+        state.plan_shape = normalize_plan_shape(
+            {
+                "days": [
+                    {"day": 1, "location": "Haifa", "activities": 2},
+                    {"day": 2, "location": "Haifa", "activities": 3},
+                    {"day": 3, "location": "Tel Aviv", "activities": 2},
+                    {"day": 4, "location": "Tel Aviv", "activities": 1},
+                ]
+            },
+            state.profile,
+        )
+        state.candidates["h1"] = Candidate(
+            "h1", "Haifa Hotel", "hotel", {"city": "Haifa"}, verdict="supported"
+        )
+        state.candidates["h2"] = Candidate(
+            "h2", "Tel Aviv Hotel", "hotel", {"city": "Tel Aviv"}, verdict="unknown"
+        )
+        state.selected_hotel_id = "h1"
+        state.selected_hotel_stays = [
+            {"place_id": "h1", "location": "Haifa", "start_day": 1, "end_day": 2},
+            {"place_id": "h2", "location": "Tel Aviv", "start_day": 3, "end_day": 4},
+        ]
+        state.itinerary = {"days": [], "summary": "A two-city trip."}
+
+        settings = load_settings()
+        rendered = render_itinerary(state, RunTrace(settings.budget), settings)
+
+        self.assertIn("Days 1–2 — Haifa: Haifa Hotel", rendered)
+        self.assertIn("Days 3–4 — Tel Aviv: Tel Aviv Hotel", rendered)
 
     def test_a_stay_row_for_the_hotel_already_booked_is_still_dropped(self):
         state = self._two_hotels()
@@ -1256,6 +1382,119 @@ class TestPlanShape(unittest.TestCase):
         state.plan_shape = normalize_plan_shape({"activities_per_day": 4}, {})
         self.assertEqual(activities_needed(state), 28)
 
+    def test_each_day_keeps_its_own_activity_target(self):
+        profile = {"destination": "Haifa", "trip_days": 3}
+        shape = normalize_plan_shape(
+            {
+                "days": [
+                    {"day": 1, "location": "Haifa", "activities": 1},
+                    {"day": 2, "location": "Haifa", "activities": 4},
+                    {"day": 3, "location": "Tel Aviv", "activities": 2},
+                ]
+            },
+            profile,
+        )
+        self.assertEqual([day["activities"] for day in shape["days"]], [1, 4, 2])
+        state = RunState("x", profile=profile, plan_shape=shape)
+        self.assertEqual(activities_needed(state), 7)
+
+    def test_nearby_city_is_allowed_unless_the_user_said_only(self):
+        raw = {
+            "days": [
+                {"day": 1, "location": "Haifa", "activities": 2},
+                {"day": 2, "location": "Tel Aviv", "activities": 3},
+            ]
+        }
+        flexible = normalize_plan_shape(
+            raw,
+            {"destination": "Haifa", "destinations": ["Haifa"], "trip_days": 2},
+        )
+        strict = normalize_plan_shape(
+            raw,
+            {
+                "destination": "Haifa",
+                "destinations": ["Haifa"],
+                "requested_locations_only": True,
+                "trip_days": 2,
+            },
+        )
+        self.assertEqual(flexible["days"][1]["location"], "Tel Aviv")
+        self.assertEqual(strict["days"][1]["location"], "Haifa")
+
+    def test_every_explicitly_requested_location_gets_a_day(self):
+        shape = normalize_plan_shape(
+            {
+                "days": [
+                    {"day": 1, "location": "Haifa", "activities": 2},
+                    {"day": 2, "location": "Haifa", "activities": 2},
+                    {"day": 3, "location": "Haifa", "activities": 2},
+                ]
+            },
+            {
+                "destination": "Haifa",
+                "destinations": ["Haifa", "Tel Aviv"],
+                "trip_days": 3,
+            },
+        )
+        self.assertIn("Tel Aviv", [day["location"] for day in shape["days"]])
+
+    def test_multi_location_days_create_one_hotel_segment_per_location(self):
+        shape = normalize_plan_shape(
+            {
+                "days": [
+                    {"day": 1, "location": "Haifa", "activities": 2},
+                    {"day": 2, "location": "Haifa", "activities": 3},
+                    {"day": 3, "location": "Tel Aviv", "activities": 2},
+                ]
+            },
+            {"destination": "Haifa", "trip_days": 3, "needs_hotel": True},
+        )
+        self.assertEqual(
+            shape["hotel_stays"],
+            [
+                {"location": "Haifa", "start_day": 1, "end_day": 2},
+                {"location": "Tel Aviv", "start_day": 3, "end_day": 3},
+            ],
+        )
+
+    def test_planner_cannot_put_a_candidate_in_the_wrong_city_day(self):
+        state = RunState("Two days in Haifa and Tel Aviv")
+        state.profile = {"destination": "Haifa", "trip_days": 2}
+        state.plan_shape = normalize_plan_shape(
+            {
+                "days": [
+                    {"day": 1, "location": "Haifa", "activities": 1},
+                    {"day": 2, "location": "Tel Aviv", "activities": 1},
+                ]
+            },
+            state.profile,
+        )
+        state.candidates["tel-aviv-place"] = Candidate(
+            "tel-aviv-place",
+            "Tel Aviv Museum",
+            "activity",
+            {"city": "Tel Aviv"},
+            verdict="supported",
+        )
+        itinerary = _enforce_verdicts(
+            state,
+            {
+                "days": [
+                    {
+                        "day": 1,
+                        "items": [
+                            {
+                                "place_id": "tel-aviv-place",
+                                "name": "Tel Aviv Museum",
+                                "kind": "activity",
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+        self.assertEqual(itinerary["days"][0]["items"], [])
+
 
 class TestResponseTidiness(unittest.TestCase):
     """The response is read by a traveller, not by a developer."""
@@ -1405,6 +1644,31 @@ class TestConcernReplacementRouting(unittest.TestCase):
         decision = decide(self._ctx(), self._state(finder_rounds=1))
         self.assertEqual(decision.next_module, "ActivityLogisticsFinder")
         self.assertIn("Museum With Steps", decision.instruction)
+
+    def test_finder_has_four_rounds_and_revisits_when_day_targets_are_short(self):
+        self.assertEqual(MAX_FINDER_ROUNDS, 4)
+        state = RunState("Three days in Haifa")
+        state.profile = {"destination": "Haifa", "trip_days": 3}
+        state.plan_shape = normalize_plan_shape(
+            {
+                "days": [
+                    {"day": 1, "location": "Haifa", "activities": 1},
+                    {"day": 2, "location": "Haifa", "activities": 2},
+                    {"day": 3, "location": "Tel Aviv", "activities": 1},
+                ]
+            },
+            state.profile,
+        )
+        state.finder_rounds = 1
+        state.candidates["one"] = Candidate(
+            "one", "One Museum", "activity", {}, verdict="supported"
+        )
+
+        decision = decide(self._ctx(), state)
+
+        self.assertEqual(decision.next_module, "ActivityLogisticsFinder")
+        self.assertIn("2 in Haifa", decision.instruction)
+        self.assertIn("Tel Aviv", decision.instruction)
 
     def test_an_empty_result_run_finishes_instead_of_replanning(self):
         # Discovery found nothing and the planner already said so. Re-running

@@ -30,7 +30,10 @@ WORD_NUMBERS = {
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
 }
 
-KNOWN_CITIES = ("amsterdam", "barcelona", "berlin")
+KNOWN_CITIES = (
+    "amsterdam", "barcelona", "berlin", "haifa", "tel aviv", "rome",
+    "new york", "london",
+)
 
 INTEREST_KEYWORDS = {
     "museum": ["museum", "museums", "gallery"],
@@ -119,8 +122,12 @@ class FakeLLMBackend:
             return _decision("SchedulePlanner", "Budget is low; plan with what we have.",
                              "Budget nearly spent.")
         if not state.get("candidates"):
-            return _decision("ActivityLogisticsFinder", "Find candidate places for this profile.",
-                             "No candidates yet.")
+            return _decision(
+                "ActivityLogisticsFinder",
+                "Find candidate places for this profile.",
+                "No candidates yet.",
+                plan_shape=_fake_plan_shape(digest),
+            )
         if (state.get("unvalidated_count") or 0) > 0:
             return _decision("AccessibilityValidator", "Check the unvalidated candidates.",
                              "Candidates need verdicts.")
@@ -136,15 +143,13 @@ class FakeLLMBackend:
             text = user_prompt
         lowered = text.lower()
 
-        destination = None
-        for city in KNOWN_CITIES:
-            if city in lowered:
-                destination = city.capitalize()
-                break
+        destinations = [city.title() for city in KNOWN_CITIES if city in lowered]
+        destination = destinations[0] if destinations else None
         if destination is None:
             match = re.search(r"\b(?:in|to|visiting|visit)\s+([A-Z][a-zA-Z]+)", text)
             if match:
                 destination = match.group(1)
+                destinations = [destination]
 
         days = _int_in(lowered, r"(\d+|one|two|three|four|five|six|seven)[\s-]*day")
         party = _int_in(lowered, r"(?:family|group|party)\s+of\s+(\d+|one|two|three|four|five|six)")
@@ -207,6 +212,10 @@ class FakeLLMBackend:
 
         profile = {
             "destination": destination or (prior or {}).get("destination"),
+            "destinations": destinations or (prior or {}).get("destinations") or [],
+            "requested_locations_only": bool(
+                re.search(r"\b(?:only|exclusively|entirely)\b", lowered)
+            ),
             "country": None,
             "trip_days": days or (prior or {}).get("trip_days"),
             "party_size": party or (prior or {}).get("party_size"),
@@ -235,46 +244,119 @@ class FakeLLMBackend:
     def _finder(self, user_prompt: str) -> dict[str, Any]:
         payload = _safe_json(user_prompt)
         profile = payload.get("profile") or {}
+        shape = payload.get("plan_shape") or {}
+        selected_hotel_stays = payload.get("selected_hotel_stays") or []
         observations = payload.get("observations") or []
         turns_left = int(payload.get("turns_left") or 1)
-        city = profile.get("destination") or ""
+        locations = shape.get("search_locations") or [profile.get("destination") or ""]
+        searched = {
+            (obs.get("tool"), str((obs.get("args") or {}).get("city") or "").casefold())
+            for obs in observations
+        }
 
-        searched = {obs.get("tool") for obs in observations}
-
-        if "search_activities" not in searched:
+        activity_city = next(
+            (
+                city for city in locations
+                if ("search_activities", str(city).casefold()) not in searched
+            ),
+            None,
+        )
+        if activity_city:
             return {
-                "thought": f"Look for activities in {city} matching the traveller's interests.",
+                "thought": f"Look for activities in {activity_city} matching the traveller's interests.",
                 "action": {
                     "tool": "search_activities",
                     "args": {
-                        "city": city,
+                        "city": activity_city,
                         "categories": profile.get("interests") or [],
                         "limit": 6,
                     },
                 },
             }
 
-        if profile.get("needs_hotel") and "search_hotels" not in searched and turns_left > 1:
+        covered_hotels = {
+            str(stay.get("location") or "").casefold()
+            for stay in selected_hotel_stays
+            if stay.get("place_id")
+        }
+        hotel_city = next(
+            (
+                str(stay.get("location") or "")
+                for stay in (shape.get("hotel_stays") or [])
+                if str(stay.get("location") or "").casefold() not in covered_hotels
+                and (
+                    "search_hotels",
+                    str(stay.get("location") or "").casefold(),
+                ) not in searched
+            ),
+            None,
+        )
+        if profile.get("needs_hotel") and hotel_city and turns_left > 1:
             return {
-                "thought": "The traveller needs a hotel, so search accommodation next.",
-                "action": {"tool": "search_hotels", "args": {"city": city, "limit": 3}},
+                "thought": f"The traveller needs accommodation in {hotel_city}.",
+                "action": {
+                    "tool": "search_hotels",
+                    "args": {"city": hotel_city, "limit": 3},
+                },
             }
 
-        if "search_restaurants" not in searched and turns_left > 1:
+        wants_food = "food" in (profile.get("interests") or [])
+        primary_city = str(locations[0] if locations else profile.get("destination") or "")
+        if wants_food and ("search_restaurants", primary_city.casefold()) not in searched and turns_left > 1:
             return {
                 "thought": "Add a couple of meal options near the selected areas.",
-                "action": {"tool": "search_restaurants", "args": {"city": city, "limit": 2}},
+                "action": {
+                    "tool": "search_restaurants",
+                    "args": {"city": primary_city, "limit": 2},
+                },
             }
 
         activities, hotels, restaurants = _partition_observations(observations)
-        wanted = max(2, (profile.get("trip_days") or 3) * (profile.get("max_activities_per_day") or 2))
+        wanted = max(
+            2,
+            sum(
+                int(day.get("activities") or 1)
+                for day in (shape.get("days") or [])
+                if isinstance(day, dict)
+            ),
+        )
+        selected_hotels = []
+        for observation in observations:
+            if observation.get("tool") != "search_hotels":
+                continue
+            location = str((observation.get("args") or {}).get("city") or "")
+            rows = (observation.get("result") or {}).get("results") or []
+            if rows and rows[0].get("id"):
+                selected_hotels.append(
+                    {"place_id": rows[0]["id"], "location": location}
+                )
+        activity_targets: dict[str, int] = {}
+        for day in shape.get("days") or []:
+            if not isinstance(day, dict):
+                continue
+            location = str(day.get("location") or "")
+            activity_targets[location.casefold()] = activity_targets.get(
+                location.casefold(), 0
+            ) + int(day.get("activities") or 1)
+        selected_activities: list[str] = []
+        for observation in observations:
+            if observation.get("tool") != "search_activities":
+                continue
+            location = str((observation.get("args") or {}).get("city") or "").casefold()
+            target = activity_targets.get(location, wanted)
+            rows = (observation.get("result") or {}).get("results") or []
+            selected_activities.extend(
+                row["id"] for row in rows[: target + 2] if row.get("id")
+            )
+        if not selected_activities:
+            selected_activities = activities[: wanted + 2]
         return {
             "thought": "Enough candidates gathered; hand them to the validator.",
             "action": {
                 "tool": "finish",
                 "args": {
-                    "selected_activity_ids": activities[: wanted + 2],
-                    "selected_hotel_id": hotels[0] if (hotels and profile.get("needs_hotel")) else None,
+                    "selected_activity_ids": selected_activities,
+                    "selected_hotels": selected_hotels,
                     "selected_restaurant_ids": restaurants[:2],
                 },
             },
@@ -365,20 +447,36 @@ class FakeLLMBackend:
         candidates = payload.get("candidates") or []
 
         trip_days = max(1, int(profile.get("trip_days") or 2))
-        per_day = max(1, int(profile.get("max_activities_per_day") or 2))
+        shape = payload.get("plan_shape") or {}
+        day_shapes = shape.get("days") or []
 
         activities = [c for c in candidates if c.get("kind") == "activity"]
         meals = [c for c in candidates if c.get("kind") == "restaurant"]
 
         days, used = [], set()
-        cursor = 0
         for day_number in range(1, trip_days + 1):
+            day_shape = next(
+                (
+                    value for value in day_shapes
+                    if isinstance(value, dict) and value.get("day") == day_number
+                ),
+                {},
+            )
+            per_day = max(1, int(day_shape.get("activities") or 2))
+            day_location = str(day_shape.get("location") or "").casefold()
             items, minutes = [], 9 * 60 + 30
             placed = 0
 
-            while placed < per_day and cursor < len(activities):
-                activity = activities[cursor]
-                cursor += 1
+            available = [
+                activity
+                for activity in activities
+                if activity.get("place_id") not in used
+                and (
+                    not day_location
+                    or str(activity.get("city") or "").casefold() == day_location
+                )
+            ]
+            for activity in available[:per_day]:
                 used.add(activity["place_id"])
                 items.append({
                     "time": _clock(minutes),
@@ -427,11 +525,15 @@ class FakeLLMBackend:
         ]
 
         destination = profile.get("destination") or "your destination"
+        targets = [
+            int(day.get("activities") or 1)
+            for day in day_shapes
+            if isinstance(day, dict)
+        ]
         return {
             "summary": (
-                f"A {trip_days}-day plan for {destination} at {per_day} "
-                f"{'activity' if per_day == 1 else 'activities'} per day, ordered so each day "
-                "stays in one part of the city without unnecessary stops."
+                f"A {trip_days}-day plan for {destination} with daily attraction targets "
+                f"{targets or [2] * trip_days}, ordered so each day stays geographically compact."
             ),
             "days": days,
             "not_scheduled": not_scheduled[:6],
@@ -462,13 +564,42 @@ def _unknown_verdict(place_id: str, summary: str) -> dict[str, Any]:
     }
 
 
-def _decision(module: str, instruction: str, reasoning: str, question: str | None = None):
-    return {
+def _decision(
+    module: str,
+    instruction: str,
+    reasoning: str,
+    question: str | None = None,
+    plan_shape: dict[str, Any] | None = None,
+):
+    decision = {
         "reasoning": reasoning,
         "next_module": module,
         "instruction": instruction,
         "clarification_question": question,
     }
+    if plan_shape is not None:
+        decision["plan_shape"] = plan_shape
+    return decision
+
+
+def _fake_plan_shape(profile: dict[str, Any]) -> dict[str, Any]:
+    trip_days = max(1, int(profile.get("trip_days") or 3))
+    base = int(profile.get("max_activities_per_day") or 2)
+    locations = profile.get("destinations") or [profile.get("destination") or ""]
+    days = []
+    for index in range(trip_days):
+        # The fake backend mirrors the real schema and deliberately demonstrates
+        # that daily targets need not be identical.
+        adjustment = 0 if trip_days == 1 else (-1 if index in {0, trip_days - 1} else 0)
+        location_index = min(len(locations) - 1, (index * len(locations)) // trip_days)
+        days.append(
+            {
+                "day": index + 1,
+                "location": locations[location_index],
+                "activities": max(1, base + adjustment),
+            }
+        )
+    return {"days": days, "day_start": "09:00", "day_end": "18:00"}
 
 
 def _partition_observations(observations: list[dict]) -> tuple[list[str], list[str], list[str]]:

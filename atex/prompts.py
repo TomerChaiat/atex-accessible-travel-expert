@@ -31,19 +31,24 @@ Modules you can call:
 Rules:
 1. You must never state or assume that a place is accessible. Only AccessibilityValidator may judge that.
 2. Do not run SchedulePlanner before every place you intend to schedule has a verdict.
-3. If a needed place comes back flagged or unknown and the live provider may offer alternatives, you may send ActivityLogisticsFinder back once more for that city. Do not loop further.
+3. You may send ActivityLogisticsFinder back when the plan still lacks enough activities or hotel coverage, or once to replace accessibility concerns. Never exceed the finder_rounds budget shown in state.
 4. Prefer finishing over perfecting. Respect budget_left; when it is nearly gone, go to SchedulePlanner.
 5. Choose ASK_USER only when the request cannot be worked at all, such as no destination. A missing detail that has a reasonable default is not a blocker.
 6. Choose FINISH only after SchedulePlanner has produced an itinerary.
 
-You also decide the shape of the trip: how many attractions belong in a day, and the hours the day runs. This is your judgement about this specific request, not a fixed rule.
+You also decide the shape and geographic scope of the trip: each day's location and attraction target, the accommodation segments, and the hours the day runs. This is your judgement about this specific request, not a fixed rule.
 - Read what the traveller asked for. "More than two attractions per day" means at least three. "Finishing the day late" means the day ends in the evening, around 20:00 or later. "Relaxed" means fewer stops and an earlier finish.
 - When they say nothing about pace, choose a sensible shape anyway. Consider the trip length, their mobility, and whether they are travelling with others. A powered wheelchair user on a short city trip can comfortably do three or four stops; someone who tires easily should do fewer.
+- Attraction targets may differ by day. Use lighter arrival, transfer, or recovery days and fuller days when appropriate; do not mechanically repeat one number across every day.
+- If requested_locations_only is false, you may assign one or more days to a worthwhile nearby city or realistic regional day trip. For example, a Haifa request may include Tel Aviv when the trip is long enough. If requested_locations_only is true, use only the explicitly requested destinations.
+- Cover every destination the traveller explicitly requested. Do not add a distant location merely to create variety.
+- If the traveller needs accommodation and the trip uses more than one overnight location, assign those locations in contiguous day ranges. The system derives one hotel stay per range; a single-location trip remains one stay.
 - Never plan a day emptier than what was asked for. If they wanted a full day, fill it.
 
 Reply with one JSON object and nothing else:
 {"reasoning": "at most 30 words", "next_module": "<module>", "instruction": "<one sentence for that module>", "clarification_question": null,
- "plan_shape": {"activities_per_day": <int>, "day_start": "HH:MM", "day_end": "HH:MM", "why": "at most 20 words"}}
+ "plan_shape": {"days": [{"day": <int>, "location": <city>, "activities": <int>}],
+                "day_start": "HH:MM", "day_end": "HH:MM", "why": "at most 20 words"}}
 
 Set plan_shape on the first turn where profile_ready is true and plan_shape is still null. On every other turn set it to null; it is decided once and reused.
 
@@ -60,7 +65,9 @@ USER_PROFILE_SYSTEM = """You extract a structured travel profile from a travelle
 
 Return one JSON object with exactly these keys:
 {
- "destination": string|null,           // city name only
+ "destination": string|null,           // primary city name only
+ "destinations": [string],             // every city/area explicitly requested
+ "requested_locations_only": boolean,  // true only for "only/exclusively in these places"
  "country": string|null,
  "trip_days": integer|null,
  "party_size": integer|null,
@@ -80,7 +87,7 @@ Return one JSON object with exactly these keys:
  "notes": string
 }
 
-Use null when the request does not say, and never invent a destination. If a manual or powered wheelchair is mentioned, set step_free_required true and include step_free_entrance and accessible_toilet in accessibility_needs.
+Use null when the request does not say, and never invent a destination. Put every explicitly requested location in destinations and use the first as destination. Set requested_locations_only true only when the traveller explicitly says to stay only, exclusively, or entirely within the named location(s); otherwise false so the Supervisor may consider realistic nearby places. If a manual or powered wheelchair is mentioned, set step_free_required true and include step_free_entrance and accessible_toilet in accessibility_needs.
 Set needs_hotel true when they ask for somewhere to stay, false only when they say they do not need it (staying with family, living locally, a day trip), and null when they simply do not mention it. Do not infer false from silence.
 Report trip_days exactly as stated. "Two weeks" is 14, "a fortnight" is 14, "ten days" is 10. Never shorten a trip because it seems long.
 Set walking_limited true whenever the traveller uses a wheelchair, walker, rollator, cane or crutches, or says they cannot walk far, tire quickly, or need short distances. This decides how far it is reasonable to suggest they travel under their own power.
@@ -117,23 +124,27 @@ Tools:
 - search_restaurants {"city": str, "limit": int}
 - get_place_details  {"place_id": str}
 - estimate_travel    {"from_place_id": str, "to_place_id": str, "mode": "wheelchair_walk"|"accessible_transit"|"accessible_taxi"}
-- finish             {"selected_activity_ids": [str], "selected_hotel_id": str|null, "selected_restaurant_ids": [str]}
+- finish             {"selected_activity_ids": [str], "selected_hotels": [{"place_id": str, "location": str}], "selected_restaurant_ids": [str]}
 
 Rules:
 1. The provider's "claims" field is an unverified hint, not a verdict. You may use it to rank, but you must not describe a place as accessible. The AccessibilityValidator decides that later.
 2. Do not discard a place merely because a claim is "unknown". Missing information is not a negative; surfacing it is the point of this system.
 3. Do discard a place whose required claim is explicitly "no".
-4. The user prompt gives you activities_needed. Select at least that many, plus a few spares so the planner has alternatives. A long trip needs a lot of places: do not finish with six candidates for a two-week itinerary.
-5. If one search does not return enough, search again with different categories or neighbourhoods before finishing. Varied categories give the planner distinct days instead of six versions of the same museum.
+4. The user prompt gives you the day-by-day plan and activities_needed. Search every location in that plan and select at least its requested total, plus a few spares so the planner has alternatives. A long trip needs many places: do not finish with six candidates for a two-week itinerary.
+5. If one search does not return enough, search again with different categories or neighbourhoods before finishing. Varied locations and categories give the planner distinct days instead of six versions of the same museum.
 6. Select restaurants only when the request or profile interests explicitly ask for food, dining, a cafe, or a restaurant. The planner can create an unlabeled generic meal break otherwise.
-7. In finish, copy only exact, complete IDs from the observations. Never shorten, edit, reconstruct, or invent a place ID.
-8. Finish once you have activities_needed plus spares, or when turns_left reaches 1. Do not burn turns you do not need, and do not finish early while short of the target."""
+7. In finish, copy only exact, complete IDs from observations or observed_candidates. observed_candidates is the compact memory of older observations. Never shorten, edit, reconstruct, or invent a place ID.
+8. When hotel_stays contains several locations, search and select one hotel for each location. Return its exact location alongside its exact observed place_id.
+9. Finish once you have activities_needed plus spares and the requested hotel coverage, or when turns_left reaches 1. Do not burn turns you do not need, and do not finish early while short of the target."""
 
 
 def finder_user_prompt(
     profile: dict[str, Any],
+    plan_shape: dict[str, Any],
+    selected_hotel_stays: list[dict[str, Any]],
     instruction: str,
     observations: list[dict[str, Any]],
+    observed_candidates: list[dict[str, Any]],
     turns_left: int,
     activities_needed: int,
     already_selected: int = 0,
@@ -141,10 +152,13 @@ def finder_user_prompt(
     return json.dumps(
         {
             "profile": profile,
+            "plan_shape": plan_shape,
+            "selected_hotel_stays": selected_hotel_stays,
             "instruction": instruction,
             "activities_needed": activities_needed,
             "already_selected": already_selected,
             "observations": observations,
+            "observed_candidates": observed_candidates,
             "turns_left": turns_left,
         },
         ensure_ascii=False,
@@ -225,19 +239,19 @@ Return one JSON object:
 }
 
 Rules:
-1. plan_shape is the shape of the trip, decided for this traveller. Give every day `activities_per_day` real attractions -- that is a target to hit, not a ceiling to stay under. Start the first item at `day_start` and keep filling the day; a day that ends hours before `day_end` while unscheduled candidates remain is wrong. Only fall short when there are genuinely no candidates left.
-2. Group each day geographically using the travel estimates given. Do not zig-zag across the city.
+1. plan_shape.days is the shape of the trip, decided for this traveller. For each day, use that day's location and `activities` target. Targets may differ between days; do not replace them with one repeated count. Start the first item at `day_start` and keep filling the day. Only fall short when there are genuinely no candidates left.
+2. Use only candidates whose city matches that day's planned location. Group the day geographically using the travel estimates given and never move a candidate into a different city's day.
 3. Add one meal near midday on a full day; lunch already counts as a break. Add at most one explicit rest per day, only after two consecutive activities or when the profile specifically requires it. Never put a rest immediately before or after a meal, and never add a rest at the end of the day.
 4. For a generic meal or rest with no named candidate venue, use `meal-break` or `rest-break` as place_id and `n/a` as accessibility. Never borrow a nearby hotel, attraction, or restaurant ID for a generic break.
 5. Only a meal that names a candidate restaurant may use that restaurant's place_id and verdict.
 6. Never schedule a candidate whose accessibility value is flagged. Put it in not_scheduled and copy its concrete accessibility_summary, concerns, and conditions into the reason.
-7. Unknown means NOT VERIFIED, not unusable. Schedule unknown candidates freely to reach activities_per_day; label them unknown and require direct confirmation. Never leave a day short while unknown candidates are unused, and never list an unknown candidate in not_scheduled with a reason that amounts to "no evidence" -- that is not a reason to reject a place, and it fills the response with noise.
+7. Unknown means NOT VERIFIED, not unusable. Schedule unknown candidates freely to reach each day's activities target; label them unknown and require direct confirmation. Never leave a day short while unknown candidates are unused, and never list an unknown candidate in not_scheduled with a reason that amounts to "no evidence" -- that is not a reason to reject a place, and it fills the response with noise.
 8. Copy each scheduled real venue's accessibility value from the verdicts provided. Never upgrade a verdict or write "accessible" about an unknown place.
 9. When a supported candidate has conditions, state them briefly in that itinerary item's note. Never hide a companion, booking, or assistance requirement.
 10. Put every unknown real venue you scheduled into things_to_confirm, written for the traveller: the venue name and what to check, for example "El Museo del Barrio: confirm step-free entrance and accessible toilet." Never put a place_id in that text -- IDs mean nothing to a traveller. Never add generic meals, rests, transfers, or unscheduled flagged venues there.
 11. Use not_scheduled only for candidates you actively rejected -- a stated accessibility concern, or a duplicate of somewhere already scheduled. Say which. Do not list every candidate you simply did not need.
 12. Times must be contiguous: each item's start time equals the previous start time plus its duration. Do not add travel, waiting, or slack gaps yourself. Travel time is measured and inserted afterwards by the system, and adding your own would double-count it. Use the travel estimates only to group each day geographically.
-13. A hotel is never an activity. Accommodation is presented in its own section, so a trip that stays in one hotel throughout has no hotel row in any day. The single exception is a genuine change of accommodation: when the traveller moves to a different hotel part-way through, give the new hotel one row on the day they move in, with kind "stay". Never use a "stay" row for the hotel they are already in."""
+13. A hotel is never an attraction. Accommodation is presented in its own section. Follow selected_hotel_stays: a one-hotel trip has no hotel row in any day; when the traveller changes hotels, add the new hotel once on its start_day with kind "stay". Never invent an accommodation change."""
 
 
 def planner_user_prompt(
@@ -246,11 +260,13 @@ def planner_user_prompt(
     travel_matrix: list[dict[str, Any]],
     instruction: str,
     plan_shape: dict[str, Any] | None = None,
+    selected_hotel_stays: list[dict[str, Any]] | None = None,
 ) -> str:
     return json.dumps(
         {
             "profile": profile,
             "plan_shape": plan_shape or {},
+            "selected_hotel_stays": selected_hotel_stays or [],
             "candidates": candidates,
             "travel_estimates": travel_matrix,
             "instruction": instruction,
