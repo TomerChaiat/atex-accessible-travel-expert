@@ -160,7 +160,10 @@ the assignment uses each spelling in a different place; drop the aliases in
 
 **Follow-up turns** work by sending an optional `session_id` alongside the
 prompt. The browser generates it, so the endpoint stays a plain
-`{"prompt": "..."}` contract for anyone calling it directly.
+`{"prompt": "..."}` contract for anyone calling it directly. Every new message
+refreshes the saved profile first. A newly named destination clears the old
+day shape, candidates, hotel stays, and verdicts; a genuine same-trip follow-up
+keeps reusable work whose assumptions have not changed.
 
 ---
 

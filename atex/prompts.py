@@ -88,6 +88,7 @@ Return one JSON object with exactly these keys:
 }
 
 Use null when the request does not say, and never invent a destination. Put every explicitly requested location in destinations and use the first as destination. Set requested_locations_only true only when the traveller explicitly says to stay only, exclusively, or entirely within the named location(s); otherwise false so the Supervisor may consider realistic nearby places. If a manual or powered wheelchair is mentioned, set step_free_required true and include step_free_entrance and accessible_toilet in accessibility_needs.
+When previous_profile is supplied and new_request names a different destination, replace destination and destinations completely. Never carry old cities into a newly named trip. Preserve prior fields only when the new message is genuinely a follow-up about the same trip.
 Set needs_hotel true when they ask for somewhere to stay, false only when they say they do not need it (staying with family, living locally, a day trip), and null when they simply do not mention it. Do not infer false from silence.
 Report trip_days exactly as stated. "Two weeks" is 14, "a fortnight" is 14, "ten days" is 10. Never shorten a trip because it seems long.
 Set walking_limited true whenever the traveller uses a wheelchair, walker, rollator, cane or crutches, or says they cannot walk far, tire quickly, or need short distances. This decides how far it is reasonable to suggest they travel under their own power.

@@ -1705,6 +1705,38 @@ class TestFollowUpTurns(unittest.TestCase):
             "a follow-up should not re-validate everything from scratch",
         )
 
+    def test_a_new_destination_clears_the_previous_trip_state(self):
+        first = run_agent(
+            "Three days in Amsterdam, manual wheelchair, relaxed pace, need a hotel."
+        )
+        saved = first.session_state()
+        saved["turn_index"] = first.state.turn_index
+
+        second = run_agent(
+            "I am travelling alone to Rome for six days and use a manual wheelchair.",
+            session_id="same-browser-session",
+            saved_state=saved,
+        )
+
+        self.assertIsNone(second.error)
+        self.assertEqual(second.state.profile["destination"], "Rome")
+        self.assertEqual(second.state.profile["destinations"], ["Rome"])
+        self.assertNotIn("Amsterdam", second.state.shape["search_locations"])
+        self.assertIn("Rome", second.response)
+        self.assertNotIn("itinerary: Amsterdam", second.response)
+
+    def test_same_trip_follow_up_refreshes_profile_without_losing_destination(self):
+        first = run_agent("Three days in Amsterdam with a manual wheelchair.")
+        saved = first.session_state()
+        second = run_agent(
+            "Make the second day quieter.",
+            session_id="same-trip",
+            saved_state=saved,
+        )
+
+        self.assertEqual(second.state.profile["destination"], "Amsterdam")
+        self.assertFalse(second.state.profile_needs_refresh)
+
 
 if __name__ == "__main__":
     unittest.main()

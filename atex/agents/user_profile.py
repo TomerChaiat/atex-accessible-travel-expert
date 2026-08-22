@@ -55,6 +55,59 @@ def _strict_location_requested(request: str) -> bool:
     return any(re.search(pattern, request, re.I) for pattern in STRICT_LOCATION_PATTERNS)
 
 
+def _locations(profile: dict[str, Any] | None) -> tuple[str, ...]:
+    profile = profile or {}
+    values = profile.get("destinations") or [profile.get("destination")]
+    return tuple(
+        str(value).strip().casefold()
+        for value in values
+        if str(value or "").strip()
+    )
+
+
+def _apply_profile_change(
+    state: RunState,
+    previous: dict[str, Any] | None,
+    updated: dict[str, Any],
+) -> None:
+    """Invalidate only saved work whose assumptions the new profile changed."""
+    if previous is None:
+        return
+    previous = previous or {}
+    geography_changed = _locations(previous) != _locations(updated)
+    trip_length_changed = previous.get("trip_days") != updated.get("trip_days")
+
+    if geography_changed:
+        state.candidates.clear()
+        state.selected_hotel_id = None
+        state.selected_hotel_stays.clear()
+        state.plan_shape = None
+        state.finder_rounds = 0
+        state.validation_count = 0
+        state.log("UserProfileAgent: destination changed; cleared prior trip candidates")
+        return
+
+    shape_fields = ("pace", "max_activities_per_day", "requested_locations_only")
+    if trip_length_changed or any(
+        previous.get(field) != updated.get(field) for field in shape_fields
+    ):
+        state.plan_shape = None
+        state.finder_rounds = 0
+    if trip_length_changed:
+        state.selected_hotel_id = None
+        state.selected_hotel_stays.clear()
+
+    # Accessibility verdicts are relative to needs and companion context. A
+    # verdict paid for on the previous turn is unsafe to reuse after either one
+    # changes, even when the destination stays the same.
+    validation_fields = ("accessibility_needs", "party_size", "mobility", "sensory")
+    if any(previous.get(field) != updated.get(field) for field in validation_fields):
+        for candidate in state.candidates.values():
+            candidate.verdict = None
+            candidate.verdict_detail = {}
+        state.validation_count = 0
+
+
 def _as_int(value: Any, default: int | None = None) -> int | None:
     try:
         return int(value)
@@ -151,17 +204,36 @@ def normalize_profile(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
+    previous = state.profile
     raw = ctx.llm.complete_json(
         USER_PROFILE_AGENT,
         USER_PROFILE_SYSTEM,
         user_profile_user_prompt(state.request, state.profile),
         max_tokens=700,
     )
-    state.profile = normalize_profile(raw)
+    updated = normalize_profile(raw)
+    previous_destination = str((previous or {}).get("destination") or "").casefold()
+    updated_destination = str(updated.get("destination") or "").casefold()
+    if previous and updated_destination and updated_destination != previous_destination:
+        # Defense in depth against a merge-style model reply such as
+        # destinations=["Rome", "Haifa"] when Haifa appeared only in the saved
+        # profile. Keep the new primary plus additional places actually named
+        # in the current message.
+        request_text = state.request.casefold()
+        primary = str(updated.get("destination") or "")
+        updated["destinations"] = [primary] + [
+            location
+            for location in (updated.get("destinations") or [])
+            if location.casefold() != updated_destination
+            and location.casefold() in request_text
+        ]
     if _strict_location_requested(state.request):
         # This is a hard user boundary, so enforce it even if profile extraction
         # omitted the boolean.
-        state.profile["requested_locations_only"] = True
+        updated["requested_locations_only"] = True
+    _apply_profile_change(state, previous, updated)
+    state.profile = updated
+    state.profile_needs_refresh = False
     destination = state.profile["destination"] or "no destination given"
     state.log(
         f"UserProfileAgent: profile built for {destination}, "

@@ -254,6 +254,10 @@ class RunState:
     turn_index: int = 0
 
     profile: dict[str, Any] | None = None
+    # Saved sessions must re-read the new message before any old trip state is
+    # reused. This prevents a brand-new Rome request from running the previous
+    # Haifa plan merely because the browser kept the same session id.
+    profile_needs_refresh: bool = False
     # Decided once by the Supervisor from the request, then handed to the
     # finder (how many places to look for) and the planner (how to fill a day).
     plan_shape: dict[str, Any] | None = None

@@ -145,6 +145,18 @@ def _legalize(state: RunState, choice: str) -> tuple[str, str | None]:
 
 
 def decide(ctx: AgentContext, state: RunState) -> Decision:
+    if state.profile_needs_refresh:
+        state.log("Supervisor: -> UserProfileAgent (refresh follow-up request)")
+        ctx.trace.note(
+            "Supervisor routed to UserProfileAgent deterministically so the new message "
+            "cannot inherit a stale destination; no model call was needed."
+        )
+        return Decision(
+            next_module=USER_PROFILE_AGENT,
+            instruction="Update the saved profile from the new request before reusing trip state.",
+            reasoning="Every follow-up must be classified before prior state is reused.",
+        )
+
     if (
         state.itinerary is None
         and state.profile is not None

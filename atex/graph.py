@@ -85,6 +85,7 @@ def restore_state(request: str, session_id: str | None, saved: dict[str, Any] | 
         return state
 
     state.profile = saved.get("profile")
+    state.profile_needs_refresh = state.profile is not None
     state.plan_shape = saved.get("plan_shape")
     state.selected_hotel_id = saved.get("selected_hotel_id")
     state.selected_hotel_stays = list(saved.get("selected_hotel_stays") or [])
