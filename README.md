@@ -1,141 +1,284 @@
 # ATEX — Accessible Travel Expert
 
 A supervisor multi-agent system that plans accessible trips. Every place in the
-itinerary carries an explicit accessibility verdict: **verified**, **flagged**,
-or **unverified**. When the knowledge base is silent, ATEX says so — it never
-guesses.
-
-Course project for *AI Agents*. Deployed on Vercel, models via LLMod.ai.
-
+itinerary carries an explicit accessibility verdict: **verified**, **concerns**,
+or **unverified**.
 Built by [@omer123124](https://github.com/omer123124),
 [@LiadLivneh](https://github.com/LiadLivneh) and
-[@TomerChaiat](https://github.com/TomerChaiat) — see [CONTRIBUTORS.md](CONTRIBUTORS.md).
-
-📄 **[docs/design.md](docs/design.md)** — why the system is built this way.
-**[PLAN.md](PLAN.md)** — future work and open decisions.
+[@TomerChaiat](https://github.com/TomerChaiat) as a course project for
+*AI Agents*. Deployed on Vercel, models via LLMod.ai.
 
 ---
 
-```bash
-python scripts/devserver.py
-```
+## The problem
 
-Open <http://127.0.0.1:8000>. The agent core imports only the standard library,
-and every external service falls back to a local implementation when its
-credentials are absent — so the app and the whole test suite run with no API
-keys and no network.
+Planning a trip as a disabled traveller means assembling information no single
+source holds. Accessibility details are scattered across venue pages, blogs and
+forum threads; they go stale silently; and mainstream travel sites compress the
+whole subject into one yes/no flag.
 
-What it will not do keyless is invent content. `data/seed/` and `data/kb/` ship
-**empty**: this repository holds no place catalogue and no accessibility
-evidence. Without credentials or harvested data, place search returns nothing
-and every verdict is `unverified`, which is the honest answer rather than a
-fabricated one. See [data/seed/](data/seed/README.md) and
-[data/kb/](data/kb/README.md).
+That flag is the core failure. "Accessible" is not one property. A step-free
+entrance is worth little without an accessible toilet. A lift to every floor
+does not help someone whose barrier is noise and crowding. A beach with an
+amphibious chair is accessible only during staffed hours, in season.
 
-| Service | Configured | Offline fallback |
-|---|---|---|
-| LLM | LLMod.ai `gpt-5.4-mini` | `FakeLLMBackend` — heuristic handler per module |
-| Embeddings | `text-embedding-3-small` | hashed bag-of-words projection |
-| Vector DB | Pinecone | in-memory cosine index over `data/kb/` (empty by default) |
-| Place discovery | Google Places API (New) | `data/seed/` (empty by default; harvest target) |
-| Travel times | Google Routes API | straight-line estimate per travel mode |
+And the cost of being wrong is asymmetric. A missing restaurant booking is an
+inconvenience; a venue that turns out to have six steps at the entrance can end
+the day. Wrong information is worse than absent information — which is why the
+central commitment of this project is that **"we don't know" is a first-class
+answer**, surfaced rather than smoothed over.
 
-Run the tests the same way:
+### Who it is for
 
-```bash
-python -m unittest discover -s tests
-```
+- Travellers with disabilities planning independently
+- Families travelling with a disabled member, coordinating mixed needs
+- Travel agents assembling accessible itineraries
+
+### What it does and does not do
+
+It interprets wheelchair and walking-related mobility needs in ordinary prose,
+discovers real venues worldwide, judges each against the traveller's stated
+needs with cited evidence, paces the days, and answers follow-up turns that
+adjust an existing plan.
+
+It books nothing and takes no payment. It does not guarantee availability or
+current prices. And it will not assert that a place is accessible without
+evidence, when the knowledge base is silent it returns *unverified* and says
+so.
 
 ---
 
 ## Architecture
 
 ```
-                    Web GUI  /  POST /api/execute
-                                  |
-                            Supervisor          <- LLM decides the next module every turn
-                    ______________|______________
-                   |         |          |        |
+                                      Web GUI  /  POST /api/execute
+                                                   |
+                                               Supervisor  <- LLM decides the next module every turn
+                    _______________________________|_______________________________
+                   |               |                        |                     |
         UserProfileAgent  ActivityLogisticsFinder  AccessibilityValidator  SchedulePlanner
                               (ReAct)                    (RAG)
                                  |                        |
-                       Live place discovery      Accessibility KB
-                         (Google Places)             (Pinecone)
+                       Live place discovery      Accessibility evidence
+                         (Google Places)               (Pinecone)
 ```
 
-The supervisor is genuinely autonomous — it chooses the path, can revisit
-modules, and can ask the user a question. The loop around it guarantees only
-that the run *terminates*, stays inside Vercel's 300s limit, and always returns
-a real itinerary.
+| Module | Pattern | Responsibility |
+|---|---|---|
+| `Supervisor` | LLM router | Chooses the next module each turn; decides the trip's shape and scope; declines off-topic requests |
+| `UserProfileAgent` | Single extraction call | Prose → structured profile: mobility, sensory needs, pace, destinations |
+| `ActivityLogisticsFinder` | ReAct | Thought → Action → Observation over Google Places; shortlists activities and hotels |
+| `AccessibilityValidator` | RAG | Retrieves evidence per place, returns `supported` / `flagged` / `unknown` with citations |
+| `SchedulePlanner` | Single generation call | Day-by-day itinerary: geography, pacing, travel, accommodation |
 
 `GET /api/model_architecture` serves the diagram. It is generated by
-`scripts/build_architecture_png.py`, which imports the module names from
-`atex/__init__.py` rather than retyping them — so the diagram cannot drift from
+`scripts/build_architecture_png.py`, which imports module names from
+`atex/__init__.py` rather than retyping them, so the diagram cannot drift from
 the trace. A test enforces this.
 
-### The five modules
+### Why multiple agents
 
-| Module | Role | Cost |
-|---|---|---|
-| `Supervisor` | Routing, invariants, trip shape, replanning, clarification | 1 call per turn |
-| `UserProfileAgent` | Free text → structured profile | 1 call |
-| `ActivityLogisticsFinder` | ReAct over live Google Places results, across planned nearby locations | ≤ 8 calls per round, ≤ 4 rounds |
-| `AccessibilityValidator` | RAG verdicts with cited evidence | 1 call per 5 places |
-| `SchedulePlanner` | Day-by-day itinerary | 1 call |
+The task decomposes into four jobs that share almost nothing: reading a
+person's needs out of prose, searching a catalogue, judging evidence, and
+arranging a schedule under constraints. One prompt doing all four would be long,
+would mix retrieval with judgement, and would make failure impossible to
+localise — when an itinerary is wrong you could not tell whether the profile was
+misread, the search was poor, or the accessibility call was wrong.
 
-A typical 3-day trip costs **12–14 LLM calls and ~15k tokens**. A two-week trip
-needs far more candidates and lands nearer **35–45 calls and ~90k tokens**, which
-is what the limits below are sized for.
+The decisive reason is the accessibility judgement. Confining it to one module
+lets us forbid it everywhere else: every other prompt states explicitly that it
+may not assert accessibility. A monolithic agent has no such seam.
 
 ---
 
-## How accessibility honesty is enforced
+## How honesty is enforced
 
-The promise "never invent an answer" is not left to prompt wording. Three
-mechanisms back it in code:
+The promise "never invent an answer" is not left to prompt wording. It is
+enforced in code, after the model has spoken:
 
-1. **No evidence → no model call.** If retrieval finds nothing about a place,
-   `unknown` is returned deterministically. The cheapest answer and the honest
+1. **No evidence, no model call.** If retrieval returns nothing for a place, the
+   verdict is `unknown` deterministically. The honest answer and the cheapest
    one coincide.
-2. **Citations are checked.** `_sanitize()` drops evidence ids the model did not
-   receive, and downgrades any `supported` verdict that cites nothing.
+2. **Citations are checked.** Evidence ids the model did not receive are
+   dropped, and a `supported` verdict citing nothing is downgraded.
 3. **The planner cannot upgrade a verdict.** After the itinerary comes back,
    every accessibility label is overwritten from the recorded verdicts, and any
-   flagged or unknown place that was scheduled is added to *Confirm before you
-   travel*.
+   flagged or unverified place that was scheduled is added to *Confirm before
+   you travel*.
 
-Exact `place_id` retrieval is preferred. For places discovered live, the
-validator falls back to a constrained semantic name-and-destination query over
-Pinecone, so legacy evidence can still match a Google place without borrowing
-evidence from an unrelated venue.
+
+---
+
+## The knowledge base
+
+Accessibility evidence comes from three scraped sources, committed as CSVs under
+`data/`:
+
+| Source | Rows | Character |
+|---|---|---|
+| `wheelchairtravel_articles.csv` | 1,079 | Long-form destination guides from wheelchairtravel.org |
+| `wheelchairtraveling_articles.csv` | 892 | Region/city guides from wheelchairtraveling.com |
+| `tripadvisor_forum_data.csv` | 57,399 | Forum threads: traveller questions and replies |
+
+The pipeline is deliberately split so the expensive step is paid once:
+
+```bash
+python scripts/chunk_articles.py --report   # inspect, write nothing
+python scripts/chunk_articles.py            # CSVs  -> data/kb/*.json
+python scripts/embed_chunks.py              # chunks -> data/kb/vectors/*.jsonl
+python scripts/ingest_kb.py --from-cache    # cache  -> Pinecone
+```
+
+Chunking is sentence-based rather than paragraph-based, because the scrapers
+stripped paragraph breaks — the median newline count per article is zero.
+Chunks target 1,000 characters with 150 of overlap, capped at 40 per document so
+one 136,000-character article cannot dominate the index. Every chunk carries its
+article title as a prefix: chunk 7 of a Berlin guide is unintelligible to an
+embedding model without it.
+
+Embedding is cached locally as base64 float32, keyed by a hash of the exact text
+embedded. A cache built by a different embedder is discarded rather than mixed
+in — 256-dimension hash vectors and 1,536-dimension real ones are not
+comparable, and blending them silently would produce retrieval results that look
+plausible and are meaningless.
+
+Retrieval prefers an exact `place_id` match, then falls back to a semantic
+search scoped to the destination, then to a global one. Both fallbacks are gated
+on the passage explicitly naming the venue, so a Berlin guide cannot supply
+evidence about a museum it never mentions.
+
+### What this knowledge base cannot do
+
+This is the honest limit of the project, and it is worth stating plainly because
+it explains most of what a user actually sees.
+
+**Roughly three quarters of candidate venues have no evidence at all.** Measured
+across production runs, between 71% and 93% of discovered places returned
+`unverified` without a model call, because retrieval found nothing about them:
+
+| Destination | Candidates | Had evidence | Verified |
+|---|---|---|---|
+| Los Angeles | 43 | 35% | 15 |
+| New York City | 56 | 29% | 11 |
+| Miami | 44 | 7% | 3 |
+
+The pattern in those numbers matters: when a passage exists, the validator
+almost always reaches a verdict — in one Los Angeles run, all 15 places with
+evidence came back verified. **Coverage is the constraint, not judgement.** The
+validator is not the weak link; the corpus is.
+
+Several causes, all of them consequences of building this in a few weeks on a
+$13 model budget:
+
+- **Three sources cannot cover the world.** The corpus reflects wherever two
+  accessibility bloggers and one forum community happened to write. Coverage is
+  strong for large, frequently-discussed destinations and thin everywhere else.
+  Miami is not an unusual failure; it is what the median city looks like.
+- **Forum threads are anecdotal and dated.** They are genuinely useful — a
+  traveller describing a specific ramp is often better evidence than a venue's
+  own marketing — but they are unevenly distributed, frequently about airlines
+  and hotels rather than attractions, and carry no guarantee of currency.
+- **Venue linking depends on names.** Google Place IDs can never equal ids from
+  a scraped corpus, so every match relies on a passage naming the venue. A guide
+  that describes "the aquarium" without naming it is unreachable.
+- **City filtering is a heuristic.** An article counts as being about a city
+  only if the city appears in its title or at least three times in the body.
+  That deliberately excludes a flight review that transits Schiphol, but it also
+  excludes genuine coverage written obliquely.
+- **The index is about 15,000 vectors.** Against the number of venues Google
+  Places can return for any large city, that is small. Expanding it is a matter
+  of scraping more sources and paying for more embeddings — both bounded here by
+  time and budget rather than by design.
+- **Accessibility decays and nothing re-checks it.** Chunks record when they
+  were retrieved, but a lift that broke last month still reads as working.
+
+The system's response to all of this is the point of the project rather than a
+workaround: an unverified place is scheduled and clearly labelled, never
+silently dropped and never quietly promoted. *Unverified* is a real answer.
+
+---
+
+## Places, travel and scheduling
+
+Venues are discovered live through Google Places at request time, so any
+destination works without a manual catalogue import. Google's own accessibility
+flags are treated as ranking hints only — the verdict always comes from the
+independent evidence corpus.
+
+Travel between stops is routed **after** planning, over only the consecutive
+pairs that survived into the itinerary, which keeps a quadratic problem down to
+a handful of lookups. Google Routes supplies real durations; every failure falls
+back per-hop to a coordinate estimate. Routes has no wheelchair mode, so its
+walking times are scaled up for wheelchair and limited-walking travellers rather
+than quoted as-is.
+
+Which modes are offered is filtered by the profile, because suggesting a journey
+the traveller cannot make is worse than suggesting none:
+
+- Self-powered travel is capped by mobility: 3.0 km powered chair or scooter,
+  1.5 km manual, 0.8 km walker or cane.
+- Public transport is not offered for a hop over 40 minutes.
+- No hop between two stops on the same day may exceed 75 minutes.
+- An accessible taxi has no cap, so there is always at least one option.
+
+Several scheduling rules are enforced in code rather than requested in a prompt,
+each of them the fix for a real failure:
+
+- A day is filled to the target the Supervisor set, nearest-first, from
+  candidates nobody scheduled. Asking the model nicely produced two stops a day
+  against a target of three while forty-eight checked candidates went unused.
+- Each accommodation stay is re-based on the hotel closest to the attractions
+  planned for it. The finder chooses hotels before the itinerary exists, so it
+  cannot know where the traveller will spend their time — a fortnight based at
+  Los Angeles airport is why getting anywhere took hours.
+- Times are contiguous and include travel, so the arithmetic is checkable. Each
+  day also allows time to get out of the hotel in the morning.
+- A day never opens with a meal or a rest.
+- A hotel is never an attraction; a change of hotel appears in the day it
+  happens, with time for checking out and in, and carries no accessibility label
+  because it is logistics rather than a visit.
+- Venues whose location the provider can no longer resolve are dropped and
+  explained, not scheduled without directions.
 
 ---
 
 ## Budget guardrails
 
-All limits live in `Budget` (`atex/config.py`).
+All limits live in one `Budget` object (`atex/config.py`), each with a reserve.
 
-| Limit | Configured value |
+| Limit | Value |
 |---|---|
 | Supervisor turns | 14 |
 | Total LLM calls | 60 |
 | Tokens per run | 200,000 |
 | Wall clock | 270s |
-| ReAct iterations (per finder round) | 8 |
-| Finder rounds | 3 |
+| ReAct iterations per finder round | 8 |
+| Finder rounds | 4 |
 | Places validated per run | 60 |
 | Validation batch | 5 |
 
-The numbers are sized against a real two-week itinerary — roughly 50 candidates
-and 40-odd scheduled stops — and against Vercel's 300s ceiling at an observed
-~2.5s per LLM call. They are not a target: a three-day trip still finishes in
-around 14 calls.
+Crossing a soft limit is not an error. It ends the supervisor loop and hands
+control to *forced finalize*, which runs `SchedulePlanner` from the reserve and
+marks anything unchecked as `unknown`. A run that exhausts its budget still
+returns a complete, honest itinerary rather than an error or a timeout.
 
-Each limit keeps a **reserve**. Crossing the soft limit is not an error: it
-hands control to *forced finalize*, which runs `SchedulePlanner` from the
-reserve and marks anything unchecked as `unknown`. A run that exhausts its
-budget still returns a complete, honest itinerary rather than an error or a
-timeout.
+Efficiency is a design constraint, not an afterthought — the project ran on a
+$13 model budget in total:
+
+| Technique | Effect |
+|---|---|
+| Places passed as compact briefs, never full records | Keeps finder prompts small |
+| Supervisor sees a lossy state summary, not a transcript | Per-turn prompt stays roughly constant as the trip grows |
+| Verdicts batched five places per call | 50 validator calls become 10 |
+| Empty retrieval short-circuits the model | Free verdicts for places with no evidence |
+| ReAct observations windowed to the last three | A long loop cannot inflate the prompt |
+| Two empty searches end the finder loop | A destination with no coverage costs 2 calls, not 8 |
+| Off-topic requests declined on the first turn | One call instead of a full planning run |
+| Final response rendered by code, not an LLM | Saves a call and cannot contradict the verdicts |
+| Embeddings cached by content hash | Re-ingestion never re-pays for unchanged text |
+
+A three-day trip costs roughly 12–14 calls and ~15k tokens. A two-week trip
+lands nearer 25–35 calls and ~100k tokens.
 
 ---
 
@@ -147,113 +290,119 @@ timeout.
 | `GET /api/agent_info` | description, purpose, prompt template, worked examples with full traces |
 | `GET /api/model_architecture` | `image/png` |
 | `POST /api/execute` | `{status, error, response, steps}` |
-| `GET /api/health` | which backends are active (extra, not required) |
+| `GET /api/health` | which backends are active |
 
-`POST /api/execute` returns **exactly** the four specified top-level fields.
-Append `?debug=1` to add a non-standard `_diagnostics` object (usage, guardrail
-events) — the GUI uses it; graders never see it.
+`POST /api/execute` returns exactly those four top-level fields. Append
+`?debug=1` to add a non-standard `_diagnostics` object with usage and guardrail
+events; the GUI uses it.
 
-Every `steps[]` entry is `{module, prompt: {system_prompt, user_prompt}, response}`.
-The prompt keys are emitted in both `snake_case` and `Capitalised` form because
-the assignment uses each spelling in a different place; drop the aliases in
-`atex/tracing.py` if the graders confirm one.
+Every `steps[]` entry is `{module, prompt, response}`, and each prompt carries
+both `system_prompt`/`user_prompt` and `System_prompt`/`User_prompt` spellings.
 
 **Follow-up turns** work by sending an optional `session_id` alongside the
 prompt. The browser generates it, so the endpoint stays a plain
 `{"prompt": "..."}` contract for anyone calling it directly. Every new message
-refreshes the saved profile first. A newly named destination clears the old
-day shape, candidates, hotel stays, and verdicts; a genuine same-trip follow-up
-keeps reusable work whose assumptions have not changed.
+re-reads the profile first: a newly named destination clears the old shape,
+candidates and verdicts, while a same-trip follow-up keeps work whose
+assumptions still hold. Verdicts are reused across turns because they cost
+model calls and do not change between them, which makes a follow-up a fraction
+of the price of the first turn.
+
+The GUI at `/` needs no login. It shows the itinerary, the full step trace, and
+a one-click download of every turn's logs as JSON or readable text.
 
 ---
 
-## Data provenance — read this before demoing
-
-**This repository ships no accessibility content.** `data/seed/` and `data/kb/`
-are empty. Production discovers real venues through Google Places and reads
-evidence from Pinecone; those are the only sources of record.
-
-To run keyless with real data, harvest it:
+## Running it
 
 ```bash
-python scripts/harvest_osm.py Amsterdam Barcelona Berlin --limit 60
+python scripts/devserver.py          # http://127.0.0.1:8000
+python -m unittest discover -s tests # 209 tests, no keys, no network
+python -m compileall -q atex tests scripts api
 ```
 
-OpenStreetMap is the best keyless source here — `wheelchair=yes|limited|no`,
-`toilets:wheelchair` and `tactile_paving` are structured tags on real venues,
-and absent tags become `unknown` rather than a guess.
+The agent core imports only the standard library; runtime dependencies are just
+`fastapi` and `pydantic`, with all outbound HTTP on stdlib `urllib`. Every
+external service falls back to a local implementation when its credentials are
+absent, which is what lets the whole test suite run offline and deterministically.
 
-Any run that falls back to local data carries a visible *Local data notice*, so
-a demo can never quietly pass local content off as a live result.
+`data/seed/` and `data/kb/` ship **empty**. The repository holds no place
+catalogue and no pre-built evidence index — production discovers venues through
+Google Places and reads evidence from Pinecone, and a repository that also
+shipped hand-authored accessibility claims would have a path where invented
+content reaches a traveller. Keyless, place search returns nothing and every
+verdict is `unverified`, which is exactly what the system promises to say when
+it does not know.
 
-The test suite keeps its own small catalogue and corpus under
-[`tests/fixtures/`](tests/fixtures/README.md). That content is hand-authored and
-synthetic — it exists so the suite runs without keys or a network, and it is
-never read at runtime.
-
----
-
-## Deploying to Vercel
-
-1. Push to GitHub, import the repo in Vercel. `vercel.json` routes everything to
-   `api/index.py`, which serves both the GUI and the endpoints.
-2. Add the six deployment values listed below directly in the Vercel dashboard.
-   `.env.example` is intentionally ignored by Git.
-3. Verify production matches development:
+To run against data locally, either point at the test fixtures:
 
 ```bash
-curl -s https://YOUR-APP.vercel.app/api/health
+ATEX_SEED_DIR=tests/fixtures/seed ATEX_KB_DIR=tests/fixtures/kb python scripts/devserver.py
 ```
 
-Runtime dependencies are just `fastapi` and `pydantic` — outbound HTTP uses
-stdlib `urllib`, which keeps the serverless bundle small and cold starts short.
+…or build the real thing: `scripts/harvest_osm.py` pulls real OpenStreetMap
+accessibility tags into `data/seed/` without an API key, and the chunking
+pipeline above fills `data/kb/`.
 
-Required Vercel environment variables:
+The fixtures under `tests/fixtures/` exist only for the test suite. That content
+is hand-authored and synthetic, it is never read at runtime, and it is what lets
+the suite run with no API keys and no network.
+
+### Configuration
 
 ```text
-LLMOD_API_KEY
+LLMOD_API_KEY          text and embedding models
 LLMOD_BASE_URL
-PINECONE_API_KEY
+PINECONE_API_KEY       accessibility evidence
 PINECONE_INDEX_HOST
 PINECONE_NAMESPACE
-GOOGLE_MAPS_API_KEY
+GOOGLE_MAPS_API_KEY    Places API (New) + Routes API
 ```
 
-Enable **Places API (New)** and **Routes API** in the Google Cloud project —
-both use `GOOGLE_MAPS_API_KEY`. Routes is optional: without it, every travel
-time falls back to the local estimate and nothing else changes. The Google integration
-discovers hotels as places; it does not return bookable room inventory or live
-rates. A Booking.com Demand API partner integration would be a separate data
-source and credential.
+Routes is optional — without it, travel times fall back to coordinate estimates
+and nothing else changes. `scripts/kb_coverage.py` reports how well the corpus
+covers a given city, which is the quickest way to see the limits described
+above for yourself.
 
 ---
 
-## Setting up the real services
+## Design notes worth knowing
 
-```bash
-# 1. Google Cloud: enable Places API (New) + Routes API, create GOOGLE_MAPS_API_KEY
+**The Supervisor is genuinely autonomous.** It is a real model decision every
+turn, not a fixed pipeline: it can revisit modules, send discovery back for
+alternatives, decide how full each day should be and how late it runs, spend
+days on a nearby city, ask the traveller a question, or decline a request that
+is not about travel at all. What the loop around it guarantees is only that the
+run terminates, stays inside the platform's 300-second limit, and always ends
+with a real response.
 
-# 2. Pinecone: create an index with dimension 1536, metric cosine, then
-python scripts/ingest_kb.py
+**How full a day should be is a decision, not a constant.** It began as a
+lookup table keyed off one word, which produced two stops ending at 13:40 for a
+traveller who had asked for "more than two attractions per day and finishing the
+day late". The profile now records only what was actually said; the Supervisor
+decides the shape from the request itself, and the finder and planner work to it.
 
-# 3. Refresh the cached /api/agent_info examples
-python scripts/build_agent_info_example.py
+**The orchestrator is a hand-rolled loop** over framework-shaped nodes
+(`(ctx, state, instruction) -> None`). The budget checks, invariant corrections
+and finalize path all need to inspect state between every hop, which is awkward
+as conditional edges and easy to read as plain control flow. Porting to a graph
+library is mechanical.
 
-# 4. Regenerate the diagram after any module rename
-python scripts/build_architecture_png.py
-```
+**Conversation state survives a stateless platform** by living in a compact
+object — profile, verdicts, plan shape — rather than a transcript, keyed by a
+session id the browser owns.
 
 ---
 
-## Before submission
+## Provenance
 
-- [x] Fill in `data/team.json` (batch/order number, names, emails) — a test
-      skips with a reminder while placeholders remain
-- [ ] Ingest the real accessibility corpus into Pinecone (`scripts/ingest_kb.py`)
-- [ ] Regenerate the worked example over live providers:
-      `python scripts/build_agent_info_example.py --real`
-- [ ] Set `LLMOD_API_KEY` and confirm a real run stays inside the budget
-- [ ] Confirm the deployed URL serves the GUI at `/` with no login
-- [ ] Submit the Vercel URL and the GitHub repo URL
+Accessibility evidence is derived from publicly available writing by
+wheelchairtravel.org, wheelchairtraveling.com, and TripAdvisor forum
+contributors. Every chunk records its `source`, `source_url`, `provenance` and
+`retrieved_at`, and the validator cites the passages it relied on, so any
+verdict can be traced back to the text that produced it.
 
-Deadline: **23/08/2026**.
+Those sources are the work of disabled travellers documenting their own
+experience. Treat their writing as evidence to be cited, not as content to be
+passed off — and confirm anything that matters directly with the venue before
+you travel.
