@@ -55,11 +55,18 @@ def _strict_location_requested(request: str) -> bool:
     return any(re.search(pattern, request, re.I) for pattern in STRICT_LOCATION_PATTERNS)
 
 
+# "hotels" is at least as common as "hotel" in these requests, and every
+# pattern used to end at `hotel\b` -- so "I want 2 different hotels, one for
+# the first week and another for the second" matched nothing at all.
+_STAY_NOUN = r"(?:hotels?|accommodations?|places? to stay)"
+
 REPLACE_HOTEL_PATTERNS = (
-    r"\b(?:a\s+)?(?:different|another|other|new|alternative)\s+(?:hotel|place to stay|accommodation)\b",
-    r"\b(?:change|replace|swap)\s+(?:the\s+|my\s+|our\s+)?(?:hotel|accommodation)\b",
-    r"\b(?:hotel|accommodation)\b[^.?!]{0,40}\b(?:instead|elsewhere)\b",
-    r"\b(?:don'?t|do not|not)\s+(?:like|want)\s+(?:the\s+|this\s+)?(?:hotel|accommodation)\b",
+    rf"\b(?:\d+\s+|a\s+|two\s+)?(?:different|another|other|new|separate|alternative)\s+{_STAY_NOUN}\b",
+    rf"\b(?:change|replace|swap|split)\s+(?:the\s+|my\s+|our\s+)?{_STAY_NOUN}\b",
+    rf"\b{_STAY_NOUN}\b[^.?!]{{0,40}}\b(?:instead|elsewhere)\b",
+    rf"\b(?:don'?t|do not|not)\s+(?:like|want)\s+(?:the\s+|this\s+)?{_STAY_NOUN}\b",
+    # "one hotel for the first week and another for the second"
+    rf"\b{_STAY_NOUN}\b[^.?!]{{0,60}}\b(?:first|second|each)\s+week\b",
 )
 
 

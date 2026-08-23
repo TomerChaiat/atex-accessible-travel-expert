@@ -1815,6 +1815,167 @@ class TestHotelMoveAndDeparture(unittest.TestCase):
         self.assertEqual(_parse_time(first["time"]), 9 * 60 + travel["min"])
 
 
+class TestDistanceSanity(unittest.TestCase):
+    """No stop should cost the traveller half a day to reach."""
+
+    def _state(self, per_day=3):
+        state = RunState("x")
+        state.profile = {
+            "trip_days": 1, "destination": "Los Angeles",
+            "destinations": ["Los Angeles"], "needs_hotel": False,
+        }
+        state.plan_shape = normalize_plan_shape(
+            {"activities_per_day": per_day, "day_start": "09:00", "day_end": "20:00"},
+            state.profile,
+        )
+        return state
+
+    def test_a_stop_hours_away_is_dropped(self):
+        # A Los Angeles day held a 165-minute taxi hop. The transit cap does
+        # not catch it: once transit is dropped for being slow, the schedule
+        # is laid out on the taxi instead.
+        state = self._state(per_day=2)
+        state.candidates["near"] = Candidate(
+            "near", "Near Museum", "activity", {"duration_min": 90}, verdict="supported"
+        )
+        state.candidates["far"] = Candidate(
+            "far", "Far Museum", "activity", {"duration_min": 90}, verdict="supported"
+        )
+        places = {
+            "near": SimpleNamespace(id="near", lat=34.05, lon=-118.25),
+            # ~120 km away: hours by any means.
+            "far": SimpleNamespace(id="far", lat=35.13, lon=-118.25),
+        }
+        itinerary = _enforce_verdicts(
+            state,
+            {"days": [{"day": 1, "items": [
+                {"place_id": "near", "name": "Near Museum", "kind": "activity"},
+                {"place_id": "far", "name": "Far Museum", "kind": "activity"},
+            ]}]},
+            router=LocalRouter(), places=places,
+        )
+        ids = [i["place_id"] for i in itinerary["days"][0]["items"]]
+        self.assertIn("near", ids)
+        self.assertNotIn("far", ids)
+
+    def test_filling_prefers_the_nearest_candidate(self):
+        # Ordering by name alone is what let a distant venue in.
+        state = self._state(per_day=2)
+        state.candidates["anchor"] = Candidate(
+            "anchor", "Zoo", "activity", {"duration_min": 90}, verdict="supported"
+        )
+        state.candidates["aaa-far"] = Candidate(
+            "aaa-far", "Aardvark Museum", "activity", {"duration_min": 90},
+            verdict="supported",
+        )
+        state.candidates["zzz-near"] = Candidate(
+            "zzz-near", "Zebra Museum", "activity", {"duration_min": 90},
+            verdict="supported",
+        )
+        places = {
+            "anchor": SimpleNamespace(id="anchor", lat=34.05, lon=-118.25),
+            "aaa-far": SimpleNamespace(id="aaa-far", lat=34.25, lon=-118.25),
+            "zzz-near": SimpleNamespace(id="zzz-near", lat=34.055, lon=-118.255),
+        }
+        itinerary = _enforce_verdicts(
+            state,
+            {"days": [{"day": 1, "items": [
+                {"place_id": "anchor", "name": "Zoo", "kind": "activity"}]}]},
+            router=LocalRouter(), places=places,
+        )
+        ids = [i["place_id"] for i in itinerary["days"][0]["items"]]
+        self.assertEqual(ids, ["anchor", "zzz-near"])
+
+    def test_a_filled_stop_carries_no_apology(self):
+        # The traveller asked for this many stops a day, so a filled one is
+        # what they requested, not something to explain away.
+        state = self._state(per_day=2)
+        state.candidates["a"] = Candidate(
+            "a", "A Museum", "activity", {"duration_min": 90}, verdict="unknown"
+        )
+        state.candidates["b"] = Candidate(
+            "b", "B Museum", "activity", {"duration_min": 90}, verdict="unknown"
+        )
+        itinerary = _enforce_verdicts(state, {"days": [{"day": 1, "items": []}]})
+        for item in itinerary["days"][0]["items"]:
+            self.assertNotIn("fill out the day", str(item.get("note") or ""))
+
+
+class TestHotelPlacement(unittest.TestCase):
+    """The base should be near what the traveller came to see."""
+
+    def _state(self):
+        state = RunState("x")
+        state.profile = {
+            "trip_days": 2, "destination": "Los Angeles",
+            "destinations": ["Los Angeles"], "needs_hotel": True,
+        }
+        state.plan_shape = normalize_plan_shape(None, state.profile)
+        for name, lat, lon in [("Downtown Museum", 34.05, -118.24),
+                               ("Downtown Gallery", 34.06, -118.25)]:
+            key = name.lower().replace(" ", "-")
+            state.candidates[key] = Candidate(
+                key, name, "activity", {"duration_min": 90, "city": "Los Angeles"},
+                verdict="supported",
+            )
+        state.candidates["airport"] = Candidate(
+            "airport", "Airport Hotel", "hotel", {"city": "Los Angeles"}, verdict="unknown"
+        )
+        state.candidates["central"] = Candidate(
+            "central", "Central Hotel", "hotel", {"city": "Los Angeles"}, verdict="unknown"
+        )
+        state.selected_hotel_id = "airport"
+        state.selected_hotel_stays = [
+            {"place_id": "airport", "location": "Los Angeles", "start_day": 1, "end_day": 2}
+        ]
+        return state
+
+    PLACES = {
+        "downtown-museum": SimpleNamespace(id="downtown-museum", lat=34.05, lon=-118.24),
+        "downtown-gallery": SimpleNamespace(id="downtown-gallery", lat=34.06, lon=-118.25),
+        "airport": SimpleNamespace(id="airport", lat=33.94, lon=-118.40),
+        "central": SimpleNamespace(id="central", lat=34.052, lon=-118.245),
+    }
+
+    def test_the_stay_moves_to_the_hotel_nearest_the_attractions(self):
+        # A fortnight in Los Angeles was based at the airport, which is why
+        # getting anywhere took hours.
+        state = self._state()
+        _enforce_verdicts(
+            state,
+            {"days": [{"day": 1, "items": []}, {"day": 2, "items": []}]},
+            router=LocalRouter(), places=self.PLACES,
+        )
+        self.assertEqual(state.selected_hotel_stays[0]["place_id"], "central")
+        self.assertEqual(state.selected_hotel_id, "central")
+
+    def test_two_stays_never_collapse_onto_one_hotel(self):
+        # A traveller who asked for a different hotel each week must not be
+        # given the same one twice because it is the most central.
+        state = self._state()
+        state.selected_hotel_stays = [
+            {"place_id": "airport", "location": "Los Angeles", "start_day": 1, "end_day": 1},
+            {"place_id": "central", "location": "Los Angeles", "start_day": 2, "end_day": 2},
+        ]
+        _enforce_verdicts(
+            state,
+            {"days": [{"day": 1, "items": []}, {"day": 2, "items": []}]},
+            router=LocalRouter(), places=self.PLACES,
+        )
+        chosen = [s["place_id"] for s in state.selected_hotel_stays]
+        self.assertEqual(len(set(chosen)), 2)
+
+    def test_a_verified_hotel_is_worth_a_longer_commute(self):
+        state = self._state()
+        state.candidates["airport"].verdict = "supported"
+        _enforce_verdicts(
+            state,
+            {"days": [{"day": 1, "items": []}, {"day": 2, "items": []}]},
+            router=LocalRouter(), places=self.PLACES,
+        )
+        self.assertEqual(state.selected_hotel_stays[0]["place_id"], "airport")
+
+
 class TestOutOfScopeRequests(unittest.TestCase):
     """A question that is not about travel must cost one model call, not a run."""
 

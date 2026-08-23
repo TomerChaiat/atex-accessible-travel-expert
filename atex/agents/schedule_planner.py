@@ -16,9 +16,9 @@ from ..context import AgentContext
 from ..prompts import PLANNER_SYSTEM, planner_user_prompt
 from ..repository import RepositoryError
 from ..routing import MODE_LABELS, build_router, drop_unreasonable, planning_option
-from ..state import RunState
+from ..state import RunState, same_location
 from ..tools import travel_matrix
-from ..util import truncate
+from ..util import haversine_km, truncate
 
 RANK = {"supported": 0, "unknown": 1, "flagged": 2, None: 3}
 
@@ -35,6 +35,14 @@ MAX_NOT_SCHEDULED = 8
 # Checking out, crossing a city with luggage, and checking in again. Travel
 # time between the two hotels is added on top of this.
 HOTEL_MOVE_MINUTES = 45
+
+# A hop between two stops on the same day. Los Angeles produced 165 minutes by
+# taxi, which is not a journey between attractions -- it is the afternoon.
+MAX_HOP_MINUTES = 75
+
+# How far afield to look when topping a day up. Wide enough for a sprawling
+# city, narrow enough that "anywhere in the metro area" is not an answer.
+MAX_FILL_KM = 30
 GENERIC_PLACEHOLDER_NAMES = {
     "break",
     "free time",
@@ -367,6 +375,134 @@ def _drop_unreachable(
     return dropped
 
 
+def _day_anchor(
+    state: RunState, items: list[dict[str, Any]], places: dict[str, Any] | None
+) -> Any:
+    """Where the day currently is: its last real stop, or the hotel it starts from."""
+    if not places:
+        return None
+    for item in reversed(items):
+        place = places.get(str(item.get("place_id") or ""))
+        if place is not None and _has_location(place):
+            return place
+    return None
+
+
+def _clear_travel(items: list[dict[str, Any]]) -> None:
+    for item in items:
+        item.pop("travel_from_previous", None)
+
+
+def _drop_distant_stops(
+    state: RunState, items: list[dict[str, Any]]
+) -> list[tuple[str, str]]:
+    """Remove stops the traveller would spend half a day reaching.
+
+    A Los Angeles day held a taxi hop of 165 minutes. Nothing caught it: the
+    transit cap only governs public transport, and once transit is dropped for
+    being slow the schedule is laid out on the taxi instead -- so an absurd
+    journey became the plan rather than a warning.
+    """
+    dropped: list[tuple[str, str]] = []
+    kept: list[dict[str, Any]] = []
+    for item in items:
+        if _travel_minutes(item) > MAX_HOP_MINUTES and _is_real_activity(item, state):
+            name = str(item.get("name") or item.get("place_id"))
+            state.log(
+                f"SchedulePlanner: dropped {name}; "
+                f"{_travel_minutes(item)} min from the previous stop"
+            )
+            dropped.append((str(item.get("place_id") or ""), name))
+            continue
+        kept.append(item)
+    items[:] = kept
+    return dropped
+
+
+def _recentre_hotels(state: RunState, places: dict[str, Any] | None) -> None:
+    """Swap each stay's hotel for the one closest to what that stay will see.
+
+    The finder picks hotels before the itinerary exists, so it cannot know
+    where the traveller will actually spend their days. A fortnight in Los
+    Angeles was based at the airport, which is why getting anywhere took
+    hours. Choosing again once the candidates are known costs nothing and is
+    the difference between a base and a commute.
+    """
+    if not places or not state.selected_hotel_stays:
+        return
+
+    # A traveller who asked for a different hotel each week must not be given
+    # the same one twice because it happens to be the most central. Every
+    # hotel another stay already holds is off limits, so recentring one stay
+    # cannot quietly take the hotel out from under the next.
+    taken: set[str] = set()
+    assigned = {
+        str(stay.get("place_id") or "")
+        for stay in state.selected_hotel_stays
+        if stay.get("place_id")
+    }
+
+    for stay in state.selected_hotel_stays:
+        location = str(stay.get("location") or "")
+        current = state.candidates.get(str(stay.get("place_id") or ""))
+        reserved = taken | (assigned - {str(stay.get("place_id") or "")})
+        targets = [
+            places[c.place_id]
+            for c in state.candidates.values()
+            if c.kind == "activity"
+            and c.verdict != "flagged"
+            and c.place_id in places
+            and _has_location(places[c.place_id])
+            and (
+                not location
+                or not c.brief.get("city")
+                or same_location(str(c.brief.get("city")), location)
+            )
+        ]
+        options = [
+            c
+            for c in state.candidates.values()
+            if c.kind == "hotel"
+            and c.verdict != "flagged"
+            and c.place_id not in reserved
+            and c.place_id in places
+            and _has_location(places[c.place_id])
+            and (
+                not location
+                or not c.brief.get("city")
+                or same_location(str(c.brief.get("city")), location)
+            )
+        ]
+        if not targets or len(options) < 2:
+            if current is not None:
+                taken.add(current.place_id)
+            continue
+
+        def mean_km(candidate: Any) -> float:
+            home = places[candidate.place_id]
+            return sum(
+                haversine_km(home.lat, home.lon, t.lat, t.lon) for t in targets
+            ) / len(targets)
+
+        # A verified hotel is worth a longer commute than an unverified one.
+        best = min(options, key=lambda c: (RANK.get(c.verdict, 3), mean_km(c)))
+        if current is not None and best.place_id == current.place_id:
+            taken.add(current.place_id)
+            continue
+        if current is not None and RANK.get(best.verdict, 3) > RANK.get(current.verdict, 3):
+            taken.add(current.place_id)
+            continue
+        state.log(
+            f"SchedulePlanner: moved the {location or 'trip'} stay to {best.name}, "
+            "closer to the planned attractions"
+        )
+        stay["place_id"] = best.place_id
+        taken.add(best.place_id)
+
+    if state.selected_hotel_stays:
+        state.selected_hotel_id = state.selected_hotel_stays[0].get("place_id")
+
+
 def _hotel_for_day(state: RunState, day_number: int) -> Any:
     """The candidate the traveller sleeps at on this day, if one was chosen."""
     for stay in state.selected_hotel_stays:
@@ -508,9 +644,26 @@ def _fill_short_day(
             return False
         return True
 
+    # Nearest first, within reach of where the day already is. Ordering by
+    # name alone put a venue nearly three hours away into a Los Angeles day
+    # because it happened to sort early.
+    anchor = _day_anchor(state, items, places)
+
+    def distance_km(candidate: Any) -> float:
+        if anchor is None or not places:
+            return 0.0
+        place = places.get(candidate.place_id)
+        if place is None:
+            return 0.0
+        return haversine_km(anchor.lat, anchor.lon, place.lat, place.lon)
+
     spare = sorted(
-        (c for c in state.candidates.values() if usable(c)),
-        key=lambda c: (RANK.get(c.verdict, 3), c.name),
+        (
+            c
+            for c in state.candidates.values()
+            if usable(c) and distance_km(c) <= MAX_FILL_KM
+        ),
+        key=lambda c: (RANK.get(c.verdict, 3), round(distance_km(c), 1), c.name),
     )
 
     for candidate in spare:
@@ -525,9 +678,11 @@ def _fill_short_day(
                 "kind": "activity",
                 "duration_min": int(candidate.brief.get("duration_min") or 90),
                 "accessibility": verdict,
-                "note": "Added to fill out the day; confirm details before you go."
-                if verdict == "unknown"
-                else "",
+                # No note. The traveller asked for this many stops a day, so a
+                # filled one is what they requested rather than something to
+                # apologise for, and an unverified venue already has its own
+                # line under "Confirm before you travel".
+                "note": "",
             }
         )
         used_ids.add(candidate.place_id)
@@ -660,6 +815,9 @@ def _enforce_verdicts(
     profile = state.profile or {}
     shape = state.shape
 
+    # Choose the base before laying out the days that start from it.
+    _recentre_hotels(state, places)
+
     days = itinerary.get("days")
     if not isinstance(days, list):
         days = []
@@ -776,21 +934,29 @@ def _enforce_verdicts(
         # A change of hotel comes first: it happens before the day's sightseeing
         # and it consumes time that must not be handed to an attraction.
         _ensure_hotel_move(state, day["items"], day_number)
-        scheduled_non_ok.extend(
-            _fill_short_day(
-                state,
-                day["items"],
-                day.pop("_target"),
-                day.pop("_location"),
-                used_ids,
-                places,
+        target = day.pop("_target")
+        location = day.pop("_location")
+        # Fill, route, and discard anything that turned out to be hours away;
+        # a second pass lets a nearer candidate take the vacated slot.
+        for _ in range(2):
+            scheduled_non_ok.extend(
+                _fill_short_day(
+                    state, day["items"], target, location, used_ids, places
+                )
             )
-        )
-        # Travel next: the times below are laid out around it.
-        _attach_travel_options(
-            state, day["items"], matrix_lookup, router, places, profile
-        )
-        _attach_hotel_departure(state, day["items"], day_number, router, places, profile)
+            _clear_travel(day["items"])
+            _attach_travel_options(
+                state, day["items"], matrix_lookup, router, places, profile
+            )
+            _attach_hotel_departure(
+                state, day["items"], day_number, router, places, profile
+            )
+            too_far = _drop_distant_stops(state, day["items"])
+            if not too_far:
+                break
+            unreachable.extend(too_far)
+            for place_id, _name in too_far:
+                used_ids.discard(place_id)
         _align_item_times(day["items"], shape.get("day_start"))
         _trim_past_day_end(state, day["items"], shape.get("day_end"))
 

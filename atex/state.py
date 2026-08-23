@@ -208,10 +208,8 @@ def normalize_plan_shape(
             )
             location = requested_locations[location_index]
         location = location or primary_location
-        canonical = canonical_location(location, known_locations)
-        if canonical != location:
-            location = canonical
-        elif location:
+        location = canonical_location(location, known_locations)
+        if location and location not in known_locations:
             # Four locations is already a substantial multi-base trip and keeps
             # discovery inside its four-round limit.
             if len(known_locations) < 4:
@@ -236,13 +234,14 @@ def normalize_plan_shape(
             )
             days[slot]["location"] = requested
 
+    # One entry per distinct place, not one per day. Appending unconditionally
+    # made a single-city fortnight report its destination fourteen times, and
+    # the itinerary was titled "Los Angeles, Los Angeles, Los Angeles, ...".
     known_locations = []
     for day in days:
-        location = day["location"]
-        canonical = canonical_location(location, known_locations)
-        if canonical != location:
-            day["location"] = canonical
-        elif location:
+        location = canonical_location(day["location"], known_locations)
+        day["location"] = location
+        if location and location not in known_locations:
             known_locations.append(location)
 
     start = _parse_hhmm(raw.get("day_start"))

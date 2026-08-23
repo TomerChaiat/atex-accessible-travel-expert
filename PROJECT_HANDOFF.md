@@ -156,6 +156,27 @@ The `.env.example` file should exist locally for documentation but remain ignore
       and never varies. The off-topic subject is not echoed back, and the
       model's reason stays in the trace rather than reaching the traveller.
 
+34. `search_locations` holds one entry per distinct place, not one per day.
+    Appending unconditionally made a single-city fortnight title itself
+    "Los Angeles, Los Angeles, Los Angeles, ..." fourteen times over.
+35. A filled stop carries no note. The traveller asked for that many stops a
+    day, so a filled one is what they requested rather than something to
+    apologise for, and an unverified venue already has its own line under
+    "Confirm before you travel".
+36. No hop between two stops on the same day may exceed 75 minutes. The
+    transit cap does not cover this: once transit is dropped for being slow,
+    the schedule is laid out on the taxi instead, and a 165-minute taxi ride
+    became the plan. Days are topped up nearest-first, within 30 km, and a
+    stop that still comes out too far is dropped and one pass of refilling
+    runs in its place.
+37. Each stay is re-based on the hotel closest to the attractions planned for
+    its days. The finder chooses hotels before the itinerary exists, so it
+    cannot know where the traveller will actually spend their time — a Los
+    Angeles fortnight based at the airport is why getting anywhere took hours.
+    A verified hotel outranks a closer unverified one, and a hotel another
+    stay already holds is never taken, so a requested split cannot collapse
+    onto one building.
+
 ## Quick examples
 
 - "We are a family of four visiting Amsterdam for three days. Our daughter uses a manual wheelchair. We prefer a relaxed pace, no more than two activities per day. We need a verified accessible hotel."
