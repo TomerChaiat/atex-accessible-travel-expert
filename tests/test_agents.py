@@ -49,6 +49,10 @@ from atex.agents.schedule_planner import (  # noqa: E402
 )
 from atex.agents.user_profile import (  # noqa: E402
     MAX_TRIP_DAYS,
+    _apply_profile_change,
+    _carry_forward,
+    _release_hotel_selection,
+    _replacement_hotel_requested,
     _strict_location_requested,
     normalize_profile,
 )
@@ -1869,6 +1873,139 @@ class TestFollowUpTurns(unittest.TestCase):
 
         self.assertEqual(second.state.profile["destination"], "Amsterdam")
         self.assertFalse(second.state.profile_needs_refresh)
+
+
+class TestFollowUpKeepsWhatWasNotMentioned(unittest.TestCase):
+    """A follow-up names only what it changes; the rest still stands.
+
+    "I want a different hotel" came back asking which city the traveller
+    meant, one message after they had said Los Angeles. Re-extracting that
+    message yields a profile with no destination, which then read as a
+    destination change and cleared the whole trip.
+    """
+
+    PREVIOUS = normalize_profile({
+        "destination": "Los Angeles",
+        "destinations": ["Los Angeles"],
+        "trip_days": 14,
+        "needs_hotel": True,
+        "max_activities_per_day": 3,
+        "mobility": {"wheelchair": "powered", "step_free_required": True},
+        "accessibility_needs": ["step_free_entrance", "accessible_toilet", "lift_access"],
+    })
+
+    def _updated(self, raw):
+        return normalize_profile(_carry_forward(raw, self.PREVIOUS))
+
+    def _state(self):
+        state = RunState("i want a different hotel")
+        state.profile = self.PREVIOUS
+        state.candidates["a"] = Candidate(
+            "a", "A Place", "activity", {}, verdict="supported"
+        )
+        state.selected_hotel_stays = [
+            {"place_id": "h1", "location": "Los Angeles", "start_day": 1, "end_day": 14}
+        ]
+        state.plan_shape = normalize_plan_shape(None, self.PREVIOUS)
+        return state
+
+    def test_a_silent_follow_up_keeps_the_destination(self):
+        updated = self._updated({"destination": None, "destinations": [], "mobility": {}})
+        self.assertEqual(updated["destination"], "Los Angeles")
+        self.assertEqual(updated["destinations"], ["Los Angeles"])
+
+    def test_a_silent_follow_up_keeps_the_trip_length(self):
+        updated = self._updated({"destination": None, "mobility": {}})
+        self.assertEqual(updated["trip_days"], 14)
+
+    def test_a_silent_follow_up_keeps_the_wheelchair(self):
+        # Losing this would quietly relax every accessibility requirement.
+        updated = self._updated({"destination": None, "mobility": {}})
+        self.assertEqual(updated["mobility"]["wheelchair"], "powered")
+        self.assertIn("lift_access", updated["accessibility_needs"])
+
+    def test_a_silent_follow_up_keeps_the_paid_for_candidates(self):
+        state = self._state()
+        updated = self._updated({"destination": None, "destinations": [], "mobility": {}})
+        _apply_profile_change(state, self.PREVIOUS, updated)
+        self.assertEqual(len(state.candidates), 1)
+        self.assertEqual(state.candidates["a"].verdict, "supported")
+        self.assertTrue(state.selected_hotel_stays)
+        self.assertIsNotNone(state.plan_shape)
+
+    def test_a_stated_false_still_wins_over_the_old_value(self):
+        # Silence is refilled; an explicit answer never is.
+        updated = self._updated({"needs_hotel": False, "mobility": {}})
+        self.assertFalse(updated["needs_hotel"])
+
+    def test_a_named_new_destination_still_clears_the_trip(self):
+        state = self._state()
+        updated = self._updated(
+            {"destination": "Berlin", "destinations": ["Berlin"], "mobility": {}}
+        )
+        _apply_profile_change(state, self.PREVIOUS, updated)
+        self.assertEqual(updated["destination"], "Berlin")
+        self.assertEqual(len(state.candidates), 0)
+        self.assertIsNone(state.plan_shape)
+
+    def test_asking_for_a_different_hotel_is_recognised(self):
+        for request in (
+            "i want a different hotel",
+            "I want another hotel please",
+            "change the hotel",
+            "can we swap our accommodation",
+            "I don't like the hotel",
+            "book a different place to stay",
+        ):
+            self.assertTrue(_replacement_hotel_requested(request), request)
+
+    def test_an_ordinary_follow_up_does_not_release_the_hotel(self):
+        for request in (
+            "Make the second day quieter.",
+            "Add a museum on day three.",
+            "Is the hotel far from the centre?",
+        ):
+            self.assertFalse(_replacement_hotel_requested(request), request)
+
+    def test_releasing_the_hotel_forces_discovery_to_find_another(self):
+        # Replanning alone cannot honour the request: the itinerary is rebuilt
+        # from the same candidates, so the same hotel wins again.
+        state = self._state()
+        state.selected_hotel_id = "h1"
+        state.candidates["h1"] = Candidate(
+            "h1", "First Hotel", "hotel", {}, verdict="supported"
+        )
+        _release_hotel_selection(state)
+        self.assertIsNone(state.selected_hotel_id)
+        self.assertEqual(state.selected_hotel_stays, [])
+        self.assertEqual(state.finder_rounds, 0)
+        # The rejected hotel stays known, which is what stops the next search
+        # from offering it straight back.
+        self.assertIn("h1", state.candidates)
+
+    def test_a_different_hotel_is_actually_selected(self):
+        first = run_agent("Three days in Amsterdam, manual wheelchair, need a hotel.")
+        saved = first.session_state()
+        saved["turn_index"] = first.state.turn_index
+        second = run_agent(
+            "i want a different hotel", session_id="swap", saved_state=saved
+        )
+        self.assertIsNotNone(first.state.selected_hotel_id)
+        self.assertIsNotNone(second.state.selected_hotel_id)
+        self.assertNotEqual(
+            first.state.selected_hotel_id, second.state.selected_hotel_id
+        )
+        # And the trip it belongs to is still the same trip.
+        self.assertEqual(second.state.profile["destination"], "Amsterdam")
+        self.assertEqual(second.state.profile["trip_days"], 3)
+
+    def test_a_changed_trip_length_reshapes_without_discarding_candidates(self):
+        state = self._state()
+        updated = self._updated({"destination": None, "trip_days": 7, "mobility": {}})
+        _apply_profile_change(state, self.PREVIOUS, updated)
+        self.assertEqual(updated["trip_days"], 7)
+        self.assertEqual(len(state.candidates), 1)
+        self.assertIsNone(state.plan_shape)
 
 
 if __name__ == "__main__":

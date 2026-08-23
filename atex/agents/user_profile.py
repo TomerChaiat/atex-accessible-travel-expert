@@ -55,6 +55,47 @@ def _strict_location_requested(request: str) -> bool:
     return any(re.search(pattern, request, re.I) for pattern in STRICT_LOCATION_PATTERNS)
 
 
+REPLACE_HOTEL_PATTERNS = (
+    r"\b(?:a\s+)?(?:different|another|other|new|alternative)\s+(?:hotel|place to stay|accommodation)\b",
+    r"\b(?:change|replace|swap)\s+(?:the\s+|my\s+|our\s+)?(?:hotel|accommodation)\b",
+    r"\b(?:hotel|accommodation)\b[^.?!]{0,40}\b(?:instead|elsewhere)\b",
+    r"\b(?:don'?t|do not|not)\s+(?:like|want)\s+(?:the\s+|this\s+)?(?:hotel|accommodation)\b",
+)
+
+
+def _replacement_hotel_requested(request: str) -> bool:
+    """True when a follow-up asks for somewhere else to stay.
+
+    Replanning alone cannot honour this: the itinerary is rebuilt from the same
+    candidates, so the same hotel wins again. The selection has to be released
+    before discovery runs, and that has to be certain rather than inferred by
+    a model mid-conversation.
+    """
+    return any(re.search(pattern, request, re.I) for pattern in REPLACE_HOTEL_PATTERNS)
+
+
+def _release_hotel_selection(state: RunState) -> None:
+    """Drop the chosen hotel so the finder has to go and find another.
+
+    The rejected hotel stays in `candidates`, which is what keeps the next
+    search from simply offering it again -- discovery excludes every place
+    already checked.
+    """
+    released = state.selected_hotel_ids
+    if not released:
+        return
+    state.selected_hotel_id = None
+    state.selected_hotel_stays.clear()
+    # A hotel gap now exists, so the Supervisor routes back to discovery.
+    state.finder_rounds = 0
+    names = ", ".join(
+        state.candidates[place_id].name
+        for place_id in released
+        if place_id in state.candidates
+    )
+    state.log(f"UserProfileAgent: traveller asked for a different hotel; released {names}")
+
+
 def _locations(profile: dict[str, Any] | None) -> tuple[str, ...]:
     profile = profile or {}
     values = profile.get("destinations") or [profile.get("destination")]
@@ -74,7 +115,11 @@ def _apply_profile_change(
     if previous is None:
         return
     previous = previous or {}
-    geography_changed = _locations(previous) != _locations(updated)
+    # An update that names no location at all has not moved the trip; it has
+    # simply not mentioned it. Only a genuinely different set of places is a
+    # change worth throwing away paid-for candidates and verdicts over.
+    new_locations = _locations(updated)
+    geography_changed = bool(new_locations) and _locations(previous) != new_locations
     trip_length_changed = previous.get("trip_days") != updated.get("trip_days")
 
     if geography_changed:
@@ -106,6 +151,65 @@ def _apply_profile_change(
             candidate.verdict = None
             candidate.verdict_detail = {}
         state.validation_count = 0
+
+
+# Fields a follow-up may leave out because it is only changing one thing.
+# "I want a different hotel" says nothing about the city, the trip length, or
+# the wheelchair, and none of those stopped being true.
+CARRIED_FIELDS = (
+    "destination",
+    "destinations",
+    "requested_locations_only",
+    "country",
+    "trip_days",
+    "party_size",
+    "mobility",
+    "sensory",
+    "pace",
+    "max_activities_per_day",
+    "budget_level",
+    "interests",
+    "needs_hotel",
+    "preferred_transport",
+    # Dropping these would silently relax what the traveller has to have, and
+    # would also look like a needs change and discard every paid-for verdict.
+    "accessibility_needs",
+)
+
+# False and 0 are answers; these are absences.
+_EMPTY = (None, "", [], {})
+
+
+def _carry_forward(raw: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
+    """Fill a follow-up extraction's gaps from the profile it is updating.
+
+    A follow-up names only what it changes. Asked to re-extract "I want a
+    different hotel", the model returns a profile with no destination at all --
+    and the run then had nothing to plan, cleared the trip, and asked which
+    city the traveller meant, one message after they said Los Angeles.
+
+    The prompt asks the model to preserve prior fields, but a prompt is a
+    request. Silence is not a retraction, so absent fields are refilled here.
+    An explicitly stated value, including false or zero, always wins.
+    """
+    if not previous:
+        return raw
+
+    merged = dict(raw)
+    for field in CARRIED_FIELDS:
+        value = merged.get(field)
+        earlier = previous.get(field)
+        if isinstance(value, dict) and isinstance(earlier, dict):
+            # Sub-fields go missing one at a time: a reply naming no wheelchair
+            # must not turn a powered chair into "unknown".
+            merged[field] = {
+                **earlier,
+                **{k: v for k, v in value.items() if v not in _EMPTY},
+            }
+        elif any(value is empty or value == empty for empty in _EMPTY):
+            if earlier not in _EMPTY:
+                merged[field] = earlier
+    return merged
 
 
 def _as_int(value: Any, default: int | None = None) -> int | None:
@@ -211,7 +315,7 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
         user_profile_user_prompt(state.request, state.profile),
         max_tokens=700,
     )
-    updated = normalize_profile(raw)
+    updated = normalize_profile(_carry_forward(raw, previous))
     previous_destination = str((previous or {}).get("destination") or "").casefold()
     updated_destination = str(updated.get("destination") or "").casefold()
     if previous and updated_destination and updated_destination != previous_destination:
@@ -232,6 +336,8 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
         # omitted the boolean.
         updated["requested_locations_only"] = True
     _apply_profile_change(state, previous, updated)
+    if previous and _replacement_hotel_requested(state.request):
+        _release_hotel_selection(state)
     state.profile = updated
     state.profile_needs_refresh = False
     destination = state.profile["destination"] or "no destination given"

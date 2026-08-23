@@ -120,6 +120,18 @@ The `.env.example` file should exist locally for documentation but remain ignore
     swallowed two and a half hours of the day. At least one option always
     survives — the traveller is never told there is no way to get there.
 
+27. A follow-up names only what it changes. Fields the new extraction leaves
+    empty are refilled from the saved profile, so "I want a different hotel"
+    keeps the city, the trip length, the wheelchair and the stated needs. An
+    explicitly stated value, including `false`, always wins over the old one.
+    An update naming no location at all is not a destination change and must
+    not discard paid-for candidates and verdicts.
+28. Asking for a different hotel releases the current selection before
+    discovery runs. Replanning alone cannot honour it — the itinerary is
+    rebuilt from the same candidates, so the same hotel wins again. The
+    rejected hotel stays in `candidates`, which is what stops the next search
+    offering it straight back.
+
 ## Quick examples
 
 - "We are a family of four visiting Amsterdam for three days. Our daughter uses a manual wheelchair. We prefer a relaxed pace, no more than two activities per day. We need a verified accessible hotel."
