@@ -184,6 +184,34 @@ def _compact_breaks(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return compact
 
 
+def _lead_with_something_to_do(
+    state: RunState, items: list[dict[str, Any]]
+) -> None:
+    """Never open a day with a meal or a rest.
+
+    A day that begins with lunch reads as though the traveller is expected to
+    turn up at noon and eat. It happens when the stop that used to come first
+    is removed -- for being unreachable, in the wrong city, or hours away --
+    leaving the break behind at the top of the day.
+
+    The break is moved after the first real stop rather than deleted, because
+    it is still a meal the traveller wants.
+    """
+    first_activity = next(
+        (index for index, item in enumerate(items) if _is_real_activity(item, state)),
+        None,
+    )
+    if first_activity in (None, 0):
+        return
+
+    leading = items[:first_activity]
+    if not all(_is_meal(item) or _is_rest(item) for item in leading):
+        return
+
+    items[:] = items[first_activity : first_activity + 1] + leading + items[first_activity + 1 :]
+    state.log("SchedulePlanner: moved a leading break after the day's first stop")
+
+
 def _parse_time(value: Any) -> int | None:
     try:
         hours, minutes = str(value).strip().split(":", 1)
@@ -957,6 +985,14 @@ def _enforce_verdicts(
             unreachable.extend(too_far)
             for place_id, _name in too_far:
                 used_ids.discard(place_id)
+        # After every drop and refill, make sure the day still opens with
+        # something to do rather than with lunch.
+        _lead_with_something_to_do(state, day["items"])
+        _clear_travel(day["items"])
+        _attach_travel_options(
+            state, day["items"], matrix_lookup, router, places, profile
+        )
+        _attach_hotel_departure(state, day["items"], day_number, router, places, profile)
         _align_item_times(day["items"], shape.get("day_start"))
         _trim_past_day_end(state, day["items"], shape.get("day_end"))
 

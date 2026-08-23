@@ -909,7 +909,10 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
         # gets topped up; that is a different promise, tested separately.
         generic = [item for item in items if not _is_real_activity(item, state)]
         self.assertEqual([item["accessibility"] for item in generic], ["n/a"])
-        self.assertEqual(items[0]["place_id"], "meal-break")
+        # The borrowed candidate ID is detached; the row becomes a plain meal.
+        self.assertEqual(generic[0]["place_id"], "meal-break")
+        # And a day never opens with the meal.
+        self.assertTrue(_is_real_activity(items[0], state))
         self.assertNotIn("Lunch break", " ".join(itinerary["things_to_confirm"]))
         self.assertNotIn("Hotel rest", " ".join(itinerary["things_to_confirm"]))
         self.assertIn(
@@ -1886,6 +1889,34 @@ class TestDistanceSanity(unittest.TestCase):
         ids = [i["place_id"] for i in itinerary["days"][0]["items"]]
         self.assertEqual(ids, ["anchor", "zzz-near"])
 
+    def test_a_day_never_opens_with_lunch(self):
+        # Day 10 of a Miami fortnight began at 12:00 with a lunch break: the
+        # stop that used to come first had been removed, leaving the meal at
+        # the top of the day.
+        state = self._state(per_day=1)
+        state.candidates["a"] = Candidate(
+            "a", "A Museum", "activity", {"duration_min": 90}, verdict="supported"
+        )
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": [
+                {"place_id": "meal-break", "name": "Lunch break", "kind": "meal"},
+                {"place_id": "a", "name": "A Museum", "kind": "activity"},
+            ]}],
+        })
+        items = itinerary["days"][0]["items"]
+        self.assertTrue(_is_real_activity(items[0], state))
+        # The meal is moved, not deleted.
+        self.assertEqual(sum(1 for i in items if i["place_id"] == "meal-break"), 1)
+
+    def test_a_day_of_nothing_but_breaks_is_left_alone(self):
+        state = self._state(per_day=1)
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": [
+                {"place_id": "meal-break", "name": "Lunch break", "kind": "meal"},
+            ]}],
+        })
+        self.assertEqual(len(itinerary["days"][0]["items"]), 1)
+
     def test_a_filled_stop_carries_no_apology(self):
         # The traveller asked for this many stops a day, so a filled one is
         # what they requested, not something to explain away.
@@ -2163,6 +2194,9 @@ class TestConcernReplacementRouting(unittest.TestCase):
     def _state(self, finder_rounds: int) -> RunState:
         state = RunState("Two days in Rome using a wheelchair")
         state.profile = {"destination": "Rome", "trip_days": 2}
+        # These tests exercise routing, not the shape decision, so the shape is
+        # already settled and the deterministic shortcuts apply.
+        state.plan_shape = normalize_plan_shape(None, state.profile)
         state.finder_rounds = finder_rounds
         state.candidates["gmp:flagged"] = Candidate(
             "gmp:flagged",
@@ -2172,6 +2206,12 @@ class TestConcernReplacementRouting(unittest.TestCase):
             verdict="flagged",
             verdict_detail={"summary": "The only entrance described has steps."},
         )
+        # Enough usable places that discovery has no gap to chase, so the
+        # concern-replacement route is the one under test.
+        for index in range(state.activity_target):
+            state.candidates[f"ok{index}"] = Candidate(
+                f"ok{index}", f"Fine Place {index}", "activity", {}, verdict="supported"
+            )
         return state
 
     def test_concern_triggers_one_replacement_search(self):
@@ -2209,6 +2249,7 @@ class TestConcernReplacementRouting(unittest.TestCase):
         # a module cannot improve that; it just burns turns until the limit.
         state = RunState("Two weeks somewhere with no coverage")
         state.profile = {"destination": "Nowhere", "trip_days": 14}
+        state.plan_shape = normalize_plan_shape(None, state.profile)
         state.finder_rounds = MAX_FINDER_ROUNDS
         state.itinerary = {"days": [], "summary": "No candidates."}
 
@@ -2395,6 +2436,43 @@ class TestFollowUpKeepsWhatWasNotMentioned(unittest.TestCase):
         # And the trip it belongs to is still the same trip.
         self.assertEqual(second.state.profile["destination"], "Amsterdam")
         self.assertEqual(second.state.profile["trip_days"], 3)
+
+    def test_plural_hotel_requests_are_recognised(self):
+        # Every pattern used to end at `hotel\b`, so none of these matched and
+        # the request was ignored three runs in a row.
+        for request in (
+            "i want 2 different hotels, one for the first week and another one for the second week",
+            "i want to stay in two different hotels across my trip, change it please",
+            "change the hotels i will be staying in",
+            "split my accommodation between two hotels",
+        ):
+            self.assertTrue(_replacement_hotel_requested(request), request)
+
+    def test_an_unsettled_shape_forces_a_real_supervisor_decision(self):
+        # Releasing the hotel clears the plan shape, which used to disable the
+        # discovery-gap check; the run then short-circuited to the planner and
+        # rebuilt the same itinerary from the same candidates.
+        state = RunState("i want two different hotels")
+        state.profile = {"destination": "Rome", "trip_days": 4, "needs_hotel": True}
+        state.plan_shape = None
+        state.candidates["a"] = Candidate(
+            "a", "A Place", "activity", {}, verdict="supported"
+        )
+
+        called = {"n": 0}
+
+        class _Llm:
+            def complete_json(self, *args, **kwargs):
+                called["n"] += 1
+                return {"next_module": "ActivityLogisticsFinder", "instruction": "",
+                        "reasoning": "", "clarification_question": None,
+                        "plan_shape": {"days": [], "day_start": "09:00", "day_end": "20:00"}}
+
+        ctx = SimpleNamespace(trace=RunTrace(load_settings().budget), llm=_Llm())
+        decide(ctx, state)
+
+        self.assertEqual(called["n"], 1, "the shape decision must not be skipped")
+        self.assertIsNotNone(state.plan_shape)
 
     def test_a_changed_trip_length_reshapes_without_discarding_candidates(self):
         state = self._state()

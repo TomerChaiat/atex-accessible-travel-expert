@@ -177,6 +177,16 @@ The `.env.example` file should exist locally for documentation but remain ignore
     stay already holds is never taken, so a requested split cannot collapse
     onto one building.
 
+38. The Supervisor's deterministic shortcuts only apply once the trip's shape
+    is settled. When `plan_shape` is None but the profile is ready — a first
+    turn, or a follow-up that asked to restructure the stays — it must make a
+    real decision. Skipping it sent "two different hotels" straight to the
+    planner, which rebuilt the same itinerary from the same candidates.
+39. A day never opens with a meal or a rest. Removing the stop that came first
+    — unreachable, wrong city, or hours away — used to leave the break at the
+    top of the day. The break moves after the first real stop rather than
+    being deleted.
+
 ## Quick examples
 
 - "We are a family of four visiting Amsterdam for three days. Our daughter uses a manual wheelchair. We prefer a relaxed pace, no more than two activities per day. We need a verified accessible hotel."

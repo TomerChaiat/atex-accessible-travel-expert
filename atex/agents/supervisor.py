@@ -164,10 +164,17 @@ def decide(ctx: AgentContext, state: RunState) -> Decision:
             reasoning="Every follow-up must be classified before prior state is reused.",
         )
 
+    # Every shortcut below assumes the trip's shape is already settled. When it
+    # is not -- a first turn, or a follow-up that asked to restructure the
+    # stays -- the Supervisor has a real decision to make and must make it.
+    # Skipping it sent "two different hotels" straight to the planner, which
+    # rebuilt the same itinerary from the same candidates and changed nothing.
+    if state.profile is not None and state.plan_shape is None:
+        return _decide_with_model(ctx, state)
+
     if (
         state.itinerary is None
         and state.profile is not None
-        and state.plan_shape is not None
         and state.finder_rounds < MAX_FINDER_ROUNDS
     ):
         activity_gaps, missing_hotels = _discovery_gaps(state)
@@ -262,6 +269,11 @@ def decide(ctx: AgentContext, state: RunState) -> Decision:
             reasoning="Validation is complete.",
         )
 
+    return _decide_with_model(ctx, state)
+
+
+def _decide_with_model(ctx: AgentContext, state: RunState) -> Decision:
+    """Ask the model which module runs next, and settle the trip's shape."""
     raw: dict[str, Any] = ctx.llm.complete_json(
         SUPERVISOR,
         SUPERVISOR_SYSTEM,
