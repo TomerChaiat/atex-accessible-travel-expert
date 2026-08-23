@@ -49,6 +49,28 @@ def main() -> int:
             kb_dir=str(fixtures / "kb"),
         )
         print("Keyless run: reading tests/fixtures/. Use --real before submitting.")
+    else:
+        # --real only declines to force the offline backends; it cannot conjure
+        # credentials. Without them config.load_settings() silently selects the
+        # keyless implementations, and the run produces a fixture trace under a
+        # flag that promised live data. Refuse rather than write that file.
+        missing = [
+            name
+            for name, present in (
+                ("LLMOD_API_KEY", bool(cfg.llmod_api_key)),
+                ("PINECONE_API_KEY", bool(cfg.pinecone_api_key)),
+                ("PINECONE_INDEX_HOST", bool(cfg.pinecone_index_host)),
+                ("GOOGLE_MAPS_API_KEY", bool(cfg.google_maps_api_key)),
+            )
+            if not present
+        ]
+        if missing:
+            print("--real needs live credentials, but these are unset:")
+            for name in missing:
+                print(f"  {name}")
+            print(f"Backends would be: {cfg.backend_summary()}")
+            print("Set them in this shell, then re-run. Nothing was written.")
+            return 1
 
     print(f"Generating with backends: {cfg.backend_summary()}")
 

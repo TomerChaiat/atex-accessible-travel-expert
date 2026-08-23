@@ -47,14 +47,12 @@ class TestExecuteContract(unittest.TestCase):
 
                 prompt = step["prompt"]
                 self.assertIsInstance(prompt, dict)
-                # Both spellings are emitted; the assignment uses each in a
-                # different place. See atex/tracing.py.
-                for key in ("system_prompt", "user_prompt", "System_prompt", "User_prompt"):
-                    self.assertIn(key, prompt)
+                # The assignment's required step schema spells these keys
+                # "System_prompt"/"User_prompt". See atex/tracing.py.
+                self.assertEqual(set(prompt), {"System_prompt", "User_prompt"})
+                for key in ("System_prompt", "User_prompt"):
                     self.assertIsInstance(prompt[key], str)
-
-                self.assertTrue(prompt["system_prompt"].strip())
-                self.assertTrue(prompt["user_prompt"].strip())
+                    self.assertTrue(prompt[key].strip())
                 self.assertIsInstance(step["response"], dict)
 
     def test_json_serialisable(self):

@@ -64,12 +64,13 @@ PROMPT_TEMPLATE_EXAMPLE = (
     "Accommodation: we need a verified accessible hotel"
 )
 
+# Kept in step with the EXAMPLES array in public/index.html, so the prompts the
+# UI offers and the prompts /api/agent_info documents are always the same three.
 EXAMPLE_PROMPTS = (
-    "We are a family of four visiting Amsterdam for three days. Our daughter uses a manual "
-    "wheelchair. We prefer a relaxed pace, no more than two activities per day. We need a "
-    "verified accessible hotel.",
-    "Four days in New York City. I use a powered wheelchair and need step-free entrances "
-    "and accessible toilets. I prefer no more than two attractions per day.",
+    "We are a family of four visiting Berlin for three days. Our daughter uses a manual "
+    "wheelchair. We want 3 activities per day.",
+    "2 weeks in Los Angeles. I use a powered wheelchair and need step-free entrances. "
+    "i want each day to have 3 activities",
     "Two days in Rome with my father, who uses a walker and cannot walk long distances. "
     "We need step-free places, short distances, and a relaxed pace.",
 )

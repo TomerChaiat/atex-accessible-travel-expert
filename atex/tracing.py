@@ -40,14 +40,11 @@ class Step:
     response: Any
 
     def to_dict(self) -> dict[str, Any]:
-        # The assignment's schema block writes the prompt keys as
-        # "System_prompt"/"User_prompt" while its worked example uses
-        # "system_prompt"/"user_prompt". We emit both spellings so the payload
-        # validates against either reading; drop the aliases if the graders
-        # confirm one form.
+        # The assignment's required step schema writes the prompt keys as
+        # "System_prompt"/"User_prompt", so those are the ones emitted. We used
+        # to ship the lowercase spellings alongside them, but the duplication
+        # was 87% of the /api/agent_info payload for no added information.
         prompt = {
-            "system_prompt": self.system_prompt,
-            "user_prompt": self.user_prompt,
             "System_prompt": self.system_prompt,
             "User_prompt": self.user_prompt,
         }
