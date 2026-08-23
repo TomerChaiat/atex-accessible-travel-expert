@@ -54,14 +54,18 @@ PROMPT_TEMPLATE = (
     "Accommodation: <needed or not>"
 )
 
+# The filled-in illustration of PROMPT_TEMPLATE. Kept on the same trip as
+# EXAMPLE_PROMPTS[0], so the template, the worked example and the UI all
+# describe one traveller rather than three unrelated ones.
 PROMPT_TEMPLATE_EXAMPLE = (
-    "Destination: Amsterdam\n"
+    "Destination: Berlin\n"
     "Trip length: 3 days\n"
     "Travellers: family of four\n"
-    "Access needs: our daughter uses a manual wheelchair, we need step-free entrances\n"
-    "Pace: relaxed, no more than two activities per day\n"
-    "Interests: museums, parks\n"
-    "Accommodation: we need a verified accessible hotel"
+    "Access needs: our daughter uses a manual wheelchair, we need step-free "
+    "entrances and an accessible toilet\n"
+    "Pace: 3 activities per day\n"
+    "Interests: museums, history\n"
+    "Accommodation: we need an accessible hotel"
 )
 
 # Kept in step with the EXAMPLES array in public/index.html, so the prompts the
