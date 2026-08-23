@@ -88,6 +88,10 @@ def _release_hotel_selection(state: RunState) -> None:
     state.selected_hotel_stays.clear()
     # A hotel gap now exists, so the Supervisor routes back to discovery.
     state.finder_rounds = 0
+    # Let the Supervisor re-decide the accommodation split too. "Change the
+    # hotels and put me in a different one each week" is a change of shape,
+    # not just of which building, and the saved shape cannot express it.
+    state.plan_shape = None
     names = ", ".join(
         state.candidates[place_id].name
         for place_id in released

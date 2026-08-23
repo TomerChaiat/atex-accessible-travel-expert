@@ -10,6 +10,7 @@ size no matter how large the trip gets.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Any
 
 from .tracing import RunTrace
@@ -38,8 +39,88 @@ def _parse_hhmm(value: Any) -> int | None:
     return hours_int * 60 + minutes_int
 
 
+# "Los Angels" and "Los Angeles" are the same city. Treating them as two split
+# a fourteen-day stay into days 1-13 and day 14, with a separate hotel for
+# each, because one typo survived from the request into a day's location.
+LOCATION_MATCH_RATIO = 0.86
+
+
+def _location_key(value: str) -> str:
+    return "".join(ch for ch in str(value or "").casefold() if ch.isalnum())
+
+
+def same_location(left: str, right: str) -> bool:
+    """True when two location strings name the same place.
+
+    Exact after normalisation, or close enough that the difference is a
+    spelling slip rather than a different city.
+    """
+    a, b = _location_key(left), _location_key(right)
+    if not a or not b:
+        return a == b
+    if a == b:
+        return True
+    if len(a) < 5 or len(b) < 5:
+        # Too short for fuzzy matching to be safe: Bath and Bern differ by one
+        # letter more than Los Angeles and Los Angels do.
+        return False
+    return SequenceMatcher(None, a, b).ratio() >= LOCATION_MATCH_RATIO
+
+
+def canonical_location(value: str, known: list[str]) -> str:
+    """Return the already-known spelling of a location, or the value itself."""
+    for candidate in known:
+        if same_location(candidate, value):
+            return candidate
+    return value
+
+
 def _hhmm(minutes: int) -> str:
     return f"{(minutes // 60) % 24:02d}:{minutes % 60:02d}"
+
+
+def _explicit_stays(
+    raw: Any, days: list[dict[str, Any]], trip_days: int
+) -> list[dict[str, Any]]:
+    """Accept a Supervisor-supplied accommodation split, or reject it entirely.
+
+    Only a split that covers the whole trip exactly once, in order, with no
+    gap and no overlap, is usable -- a partial one would leave nights with
+    nowhere to sleep. Anything malformed falls back to the geographic
+    derivation rather than being patched up into something nobody chose.
+
+    Each stay's location is snapped to the location of the days it covers, so
+    a split cannot quietly relocate the trip.
+    """
+    if not isinstance(raw, list) or not raw:
+        return []
+
+    stays: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            return []
+        try:
+            start = int(entry.get("start_day"))
+            end = int(entry.get("end_day"))
+        except (TypeError, ValueError):
+            return []
+        if not 1 <= start <= end <= trip_days:
+            return []
+        stays.append({"start_day": start, "end_day": end})
+
+    stays.sort(key=lambda stay: stay["start_day"])
+    expected = 1
+    for stay in stays:
+        if stay["start_day"] != expected:
+            return []
+        expected = stay["end_day"] + 1
+    if expected != trip_days + 1:
+        return []
+
+    by_day = {day["day"]: day["location"] for day in days}
+    for stay in stays:
+        stay["location"] = by_day.get(stay["start_day"], "")
+    return stays
 
 
 def normalize_plan_shape(
@@ -114,9 +195,9 @@ def normalize_plan_shape(
         )
 
         location = str(supplied.get("location") or "").strip()[:80]
-        if requested_only and location.casefold() not in {
-            value.casefold() for value in requested_locations
-        }:
+        if requested_only and not any(
+            same_location(value, location) for value in requested_locations
+        ):
             location = ""
         if not location and requested_locations:
             # Spread explicitly requested destinations across contiguous day
@@ -127,12 +208,9 @@ def normalize_plan_shape(
             )
             location = requested_locations[location_index]
         location = location or primary_location
-        canonical_location = next(
-            (value for value in known_locations if value.casefold() == location.casefold()),
-            None,
-        )
-        if canonical_location:
-            location = canonical_location
+        canonical = canonical_location(location, known_locations)
+        if canonical != location:
+            location = canonical
         elif location:
             # Four locations is already a substantial multi-base trip and keeps
             # discovery inside its four-round limit.
@@ -150,9 +228,7 @@ def normalize_plan_shape(
     # requested place at least one day; additional nearby places remain allowed.
     if len(requested_locations) <= trip_days:
         for location_index, requested in enumerate(requested_locations):
-            if any(
-                day["location"].casefold() == requested.casefold() for day in days
-            ):
+            if any(same_location(day["location"], requested) for day in days):
                 continue
             slot = min(
                 trip_days - 1,
@@ -163,11 +239,8 @@ def normalize_plan_shape(
     known_locations = []
     for day in days:
         location = day["location"]
-        canonical = next(
-            (value for value in known_locations if value.casefold() == location.casefold()),
-            None,
-        )
-        if canonical:
+        canonical = canonical_location(location, known_locations)
+        if canonical != location:
             day["location"] = canonical
         elif location:
             known_locations.append(location)
@@ -183,13 +256,19 @@ def normalize_plan_shape(
 
     hotel_stays: list[dict[str, Any]] = []
     if profile.get("needs_hotel"):
-        # Accommodation is derived from the normalized day locations rather
-        # than trusted to a separate model list. That guarantees every
-        # contiguous multi-city segment receives exactly one hotel search.
+        # A traveller can ask to change hotel without changing city -- "one
+        # hotel the first week and a different one the second" -- and geography
+        # alone cannot express that. So an explicit split is honoured when it
+        # is well formed, and geography remains the fallback.
+        hotel_stays = _explicit_stays(raw.get("hotel_stays"), days, trip_days)
+    if profile.get("needs_hotel") and not hotel_stays:
+        # Derived from the normalized day locations rather than trusted to a
+        # model list. That guarantees every contiguous multi-city segment
+        # receives exactly one hotel search.
         segment_start = 1
         segment_location = days[0]["location"] if days else primary_location
         for day in days[1:]:
-            if day["location"].casefold() == segment_location.casefold():
+            if same_location(day["location"], segment_location):
                 continue
             hotel_stays.append(
                 {
@@ -267,6 +346,11 @@ class RunState:
 
     itinerary: dict[str, Any] | None = None
     clarification_question: str | None = None
+    # Set when the Supervisor decides the request is not a trip at all. The
+    # loop stops immediately: every further call would be spent re-confirming
+    # that the traveller asked about the price of tomatoes. A flag rather than
+    # a message, because the reply is fixed wording that never varies.
+    out_of_scope: bool = False
 
     finder_rounds: int = 0
     validation_count: int = 0

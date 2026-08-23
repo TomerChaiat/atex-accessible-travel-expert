@@ -35,6 +35,7 @@ Rules:
 4. Prefer finishing over perfecting. Respect budget_left; when it is nearly gone, go to SchedulePlanner.
 5. Choose ASK_USER only when the request cannot be worked at all, such as no destination. A missing detail that has a reasonable default is not a blocker.
 6. Choose FINISH only after SchedulePlanner has produced an itinerary.
+7. Choose OUT_OF_SCOPE when the request is not about planning travel at all -- the price of tomatoes, writing code, general trivia. Decide this on the first turn, before any other module runs, because every further call is spent confirming an answer you already have. Put your one-sentence reason in `instruction`; it is recorded in the trace and never shown to the traveller, who always receives the same fixed reply. A vague or under-specified travel request is not out of scope: use ASK_USER for those.
 
 You also decide the shape and geographic scope of the trip: each day's location and attraction target, the accommodation segments, and the hours the day runs. This is your judgement about this specific request, not a fixed rule.
 - Read what the traveller asked for. "More than two attractions per day" means at least three. "Finishing the day late" means the day ends in the evening, around 20:00 or later. "Relaxed" means fewer stops and an earlier finish.
@@ -43,16 +44,18 @@ You also decide the shape and geographic scope of the trip: each day's location 
 - If requested_locations_only is false, you may assign one or more days to a worthwhile nearby city or realistic regional day trip. For example, a Haifa request may include Tel Aviv when the trip is long enough. If requested_locations_only is true, use only the explicitly requested destinations.
 - Cover every destination the traveller explicitly requested. Do not add a distant location merely to create variety.
 - If the traveller needs accommodation and the trip uses more than one overnight location, assign those locations in contiguous day ranges. The system derives one hotel stay per range; a single-location trip remains one stay.
+- If the traveller asks to change hotel part-way without changing city -- "one hotel the first week and a different one the second" -- give hotel_stays explicitly. The ranges must be in order, cover every day from 1 to the last exactly once, and never overlap or leave a gap; a malformed split is discarded and geography is used instead. Omit hotel_stays when geography already describes the trip.
 - Never plan a day emptier than what was asked for. If they wanted a full day, fill it.
 
 Reply with one JSON object and nothing else:
 {"reasoning": "at most 30 words", "next_module": "<module>", "instruction": "<one sentence for that module>", "clarification_question": null,
  "plan_shape": {"days": [{"day": <int>, "location": <city>, "activities": <int>}],
+                "hotel_stays": [{"start_day": <int>, "end_day": <int>}],
                 "day_start": "HH:MM", "day_end": "HH:MM", "why": "at most 20 words"}}
 
 Set plan_shape on the first turn where profile_ready is true and plan_shape is still null. On every other turn set it to null; it is decided once and reused.
 
-next_module must be exactly one of: UserProfileAgent, ActivityLogisticsFinder, AccessibilityValidator, SchedulePlanner, ASK_USER, FINISH."""
+next_module must be exactly one of: UserProfileAgent, ActivityLogisticsFinder, AccessibilityValidator, SchedulePlanner, ASK_USER, FINISH, OUT_OF_SCOPE."""
 
 
 def supervisor_user_prompt(state_summary: dict[str, Any]) -> str:
@@ -135,7 +138,7 @@ Rules:
 5. If one search does not return enough, search again with different categories or neighbourhoods before finishing. Varied locations and categories give the planner distinct days instead of six versions of the same museum.
 6. Select restaurants only when the request or profile interests explicitly ask for food, dining, a cafe, or a restaurant. The planner can create an unlabeled generic meal break otherwise.
 7. In finish, copy only exact, complete IDs from observations or observed_candidates. observed_candidates is the compact memory of older observations. Never shorten, edit, reconstruct, or invent a place ID.
-8. When hotel_stays contains several locations, search and select one hotel for each location. Return its exact location alongside its exact observed place_id.
+8. When hotel_stays contains several entries, search and select one hotel for each. Return its exact location alongside its exact observed place_id. Prefer a hotel central to the attractions you selected for that stay's days: the traveller travels out from it every morning, and a remote one spends their day getting into town.
 9. Finish once you have activities_needed plus spares and the requested hotel coverage, or when turns_left reaches 1. Do not burn turns you do not need, and do not finish early while short of the target."""
 
 

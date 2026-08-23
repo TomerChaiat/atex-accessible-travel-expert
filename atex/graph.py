@@ -121,7 +121,13 @@ def restore_state(request: str, session_id: str | None, saved: dict[str, Any] | 
 
 def _forced_finalize(ctx: AgentContext, state: RunState) -> None:
     """Produce an itinerary from the reserve when the loop ran out of budget."""
-    if state.itinerary is not None or state.clarification_question:
+    if (
+        state.itinerary is not None
+        or state.clarification_question
+        # Declining a request must cost one model call, not one plus a planner
+        # run that builds an itinerary nobody asked for.
+        or state.out_of_scope
+    ):
         return
     ctx.trace.finalizing = True
     ctx.trace.note("Forced finalize: producing an itinerary from reserve budget")
@@ -171,6 +177,13 @@ def run_agent(
                     or "Which city would you like to visit, and for how many days?"
                 )
                 trace.stop_reason = "clarification requested"
+                break
+
+            if decision.next_module == supervisor.OUT_OF_SCOPE:
+                # One model call has already established the request is not a
+                # trip. Every further call would be spent confirming that.
+                state.out_of_scope = True
+                trace.stop_reason = "request outside the agent's scope"
                 break
 
             if decision.next_module == supervisor.FINISH:

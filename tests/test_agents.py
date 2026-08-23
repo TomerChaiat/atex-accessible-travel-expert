@@ -42,6 +42,7 @@ from atex.agents.activity_finder import (  # noqa: E402
 from atex.agents.supervisor import MAX_FINDER_ROUNDS, _legalize, decide  # noqa: E402
 from atex.agents.schedule_planner import (  # noqa: E402
     MAX_NOT_SCHEDULED,
+    _duration,
     _enforce_verdicts,
     _flagged_reason,
     _is_real_activity,
@@ -65,7 +66,7 @@ from atex.repository import (  # noqa: E402
     RepositoryError,
     travel_estimate,
 )
-from atex.render import render_itinerary  # noqa: E402
+from atex.render import render_itinerary, render_out_of_scope  # noqa: E402
 from atex.routing import (  # noqa: E402
     DETOUR_FACTOR,
     GoogleRoutesRouter,
@@ -81,6 +82,7 @@ from atex.state import (  # noqa: E402
     Candidate,
     RunState,
     normalize_plan_shape,
+    same_location,
 )
 from atex.tools import ToolError, build_toolset  # noqa: E402
 from atex.tracing import RunTrace  # noqa: E402
@@ -727,7 +729,9 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
         })
         items = itinerary["days"][0]["items"]
         self.assertEqual([item["place_id"] for item in items], ["hotel-2", "p1"])
-        self.assertEqual(items[0]["accessibility"], "supported")
+        # Moving hotel is logistics, not a visit: the row carries no verdict.
+        # The hotel's own verdict is shown under "Where you'll stay".
+        self.assertEqual(items[0]["accessibility"], "n/a")
         # A zero-duration stay must not collide with what follows it.
         self.assertNotEqual(items[0]["time"], items[1]["time"])
 
@@ -1631,6 +1635,238 @@ class TestDaysAreActuallyFilled(unittest.TestCase):
         confirm = " ".join(itinerary["things_to_confirm"])
         for item in unknown:
             self.assertIn(item["name"], confirm)
+
+
+class TestLocationSpelling(unittest.TestCase):
+    """A typo is not a second city.
+
+    "2 weeks in Los Angels" put thirteen days in "Los Angeles" and one in
+    "Los Angels", which read as two destinations and produced two hotel
+    segments: days 1-13 and day 14.
+    """
+
+    def test_a_misspelt_city_is_the_same_city(self):
+        self.assertTrue(same_location("Los Angeles", "Los Angels"))
+        self.assertTrue(same_location("Amsterdam", "amsterdam "))
+        self.assertTrue(same_location("Tel-Aviv", "Tel Aviv"))
+
+    def test_genuinely_different_cities_stay_different(self):
+        self.assertFalse(same_location("Los Angeles", "Las Vegas"))
+        self.assertFalse(same_location("Rome", "Bern"))
+        self.assertFalse(same_location("Bath", "Bern"))
+
+    def test_a_typo_does_not_split_the_hotel_stay(self):
+        profile = {
+            "trip_days": 14, "destination": "Los Angeles",
+            "destinations": ["Los Angeles"], "needs_hotel": True,
+        }
+        shape = normalize_plan_shape(
+            {"days": [
+                {"day": d, "location": "Los Angeles" if d < 14 else "Los Angels",
+                 "activities": 3}
+                for d in range(1, 15)
+            ]},
+            profile,
+        )
+        self.assertEqual({d["location"] for d in shape["days"]}, {"Los Angeles"})
+        self.assertEqual(len(shape["hotel_stays"]), 1)
+        self.assertEqual(shape["hotel_stays"][0]["end_day"], 14)
+
+
+class TestAccommodationSplit(unittest.TestCase):
+    """One hotel the first week, another the second, in a single city."""
+
+    PROFILE = {
+        "trip_days": 14, "destination": "Los Angeles",
+        "destinations": ["Los Angeles"], "needs_hotel": True,
+    }
+    DAYS = [
+        {"day": d, "location": "Los Angeles", "activities": 3} for d in range(1, 15)
+    ]
+
+    def test_a_requested_split_is_honoured(self):
+        shape = normalize_plan_shape(
+            {"days": self.DAYS,
+             "hotel_stays": [{"start_day": 1, "end_day": 7},
+                             {"start_day": 8, "end_day": 14}]},
+            self.PROFILE,
+        )
+        self.assertEqual(
+            [(s["start_day"], s["end_day"]) for s in shape["hotel_stays"]],
+            [(1, 7), (8, 14)],
+        )
+        self.assertTrue(all(s["location"] == "Los Angeles" for s in shape["hotel_stays"]))
+
+    def test_a_split_with_a_gap_is_rejected_entirely(self):
+        # A partial split would leave nights with nowhere to sleep.
+        shape = normalize_plan_shape(
+            {"days": self.DAYS,
+             "hotel_stays": [{"start_day": 1, "end_day": 5},
+                             {"start_day": 9, "end_day": 14}]},
+            self.PROFILE,
+        )
+        self.assertEqual(len(shape["hotel_stays"]), 1)
+
+    def test_a_split_that_overshoots_the_trip_is_rejected(self):
+        shape = normalize_plan_shape(
+            {"days": self.DAYS,
+             "hotel_stays": [{"start_day": 1, "end_day": 20}]},
+            self.PROFILE,
+        )
+        self.assertEqual(shape["hotel_stays"][0]["end_day"], 14)
+
+    def test_no_split_given_leaves_one_stay(self):
+        shape = normalize_plan_shape({"days": self.DAYS}, self.PROFILE)
+        self.assertEqual(len(shape["hotel_stays"]), 1)
+
+
+class TestHotelMoveAndDeparture(unittest.TestCase):
+    def _state(self):
+        state = RunState("x")
+        state.profile = {
+            "trip_days": 2, "destination": "Rome", "destinations": ["Rome"],
+            "needs_hotel": True,
+        }
+        state.plan_shape = normalize_plan_shape(
+            {"days": [{"day": 1, "location": "Rome", "activities": 1},
+                      {"day": 2, "location": "Rome", "activities": 1}],
+             "hotel_stays": [{"start_day": 1, "end_day": 1},
+                             {"start_day": 2, "end_day": 2}],
+             "day_start": "09:00", "day_end": "20:00"},
+            state.profile,
+        )
+        state.candidates["h1"] = Candidate("h1", "First Hotel", "hotel", {}, verdict="supported")
+        state.candidates["h2"] = Candidate("h2", "Second Hotel", "hotel", {}, verdict="supported")
+        state.candidates["a1"] = Candidate(
+            "a1", "Colosseum", "activity", {"duration_min": 90}, verdict="supported"
+        )
+        state.selected_hotel_id = "h1"
+        state.selected_hotel_stays = [
+            {"place_id": "h1", "location": "Rome", "start_day": 1, "end_day": 1},
+            {"place_id": "h2", "location": "Rome", "start_day": 2, "end_day": 2},
+        ]
+        return state
+
+    PLACES = {
+        "h1": SimpleNamespace(id="h1", lat=41.900, lon=12.500),
+        "h2": SimpleNamespace(id="h2", lat=41.920, lon=12.520),
+        "a1": SimpleNamespace(id="a1", lat=41.890, lon=12.492),
+    }
+
+    def test_the_hotel_move_appears_in_the_day_it_happens(self):
+        # Checking out, crossing the city with luggage and checking in costs
+        # real time; a schedule that skips it hands that time to an attraction.
+        state = self._state()
+        itinerary = _enforce_verdicts(
+            state,
+            {"days": [{"day": 1, "items": []},
+                      {"day": 2, "items": [
+                          {"place_id": "a1", "name": "Colosseum", "kind": "activity"}]}]},
+            router=LocalRouter(), places=self.PLACES,
+        )
+        day2 = itinerary["days"][1]["items"]
+        self.assertEqual(day2[0]["place_id"], "h2")
+        self.assertEqual(day2[0]["kind"], "stay")
+        self.assertGreater(_duration(day2[0]), 0)
+
+    def test_the_move_carries_no_accessibility_label(self):
+        # It is logistics, not a visit. The hotel's verdict lives in
+        # "Where you'll stay", which is where a traveller looks for it.
+        state = self._state()
+        itinerary = _enforce_verdicts(
+            state,
+            {"days": [{"day": 1, "items": []}, {"day": 2, "items": []}]},
+            router=LocalRouter(), places=self.PLACES,
+        )
+        move = itinerary["days"][1]["items"][0]
+        self.assertEqual(move["accessibility"], "n/a")
+
+    def test_no_move_row_on_a_trip_that_never_changes_hotel(self):
+        state = self._state()
+        state.selected_hotel_stays = [
+            {"place_id": "h1", "location": "Rome", "start_day": 1, "end_day": 2}
+        ]
+        itinerary = _enforce_verdicts(
+            state,
+            {"days": [{"day": 1, "items": []}, {"day": 2, "items": []}]},
+            router=LocalRouter(), places=self.PLACES,
+        )
+        for day in itinerary["days"]:
+            self.assertNotIn("stay", [i.get("kind") for i in day["items"]])
+
+    def test_the_day_allows_time_to_get_out_of_the_hotel(self):
+        # Days used to begin at day_start sharp at the first attraction, as
+        # though the traveller woke up inside it.
+        state = self._state()
+        state.selected_hotel_stays = [
+            {"place_id": "h1", "location": "Rome", "start_day": 1, "end_day": 2}
+        ]
+        itinerary = _enforce_verdicts(
+            state,
+            {"days": [{"day": 1, "items": [
+                {"place_id": "a1", "name": "Colosseum", "kind": "activity"}]}]},
+            router=LocalRouter(), places=self.PLACES,
+        )
+        first = itinerary["days"][0]["items"][0]
+        travel = first["travel_from_previous"]
+        self.assertEqual(travel["from_name"], "First Hotel")
+        self.assertGreater(travel["min"], 0)
+        # 09:00 plus the journey out of the hotel, not 09:00 sharp.
+        self.assertEqual(_parse_time(first["time"]), 9 * 60 + travel["min"])
+
+
+class TestOutOfScopeRequests(unittest.TestCase):
+    """A question that is not about travel must cost one model call, not a run."""
+
+    class _Supervisor:
+        """An LLM that always declines, and counts what it was asked."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, module, system, user, **kwargs):
+            self.calls += 1
+            return {
+                "reasoning": "Not a travel request.",
+                "next_module": "OUT_OF_SCOPE",
+                "instruction": "That is a question about commodity prices, not a trip.",
+                "clarification_question": None,
+            }
+
+    def test_an_unrelated_question_stops_after_one_call(self):
+        llm = self._Supervisor()
+        with patch("atex.context.AgentContext.build") as build:
+            build.side_effect = lambda trace, cfg: SimpleNamespace(
+                trace=trace, settings=cfg, llm=llm, repo=None, vectors=None, embedder=None
+            )
+            result = run_agent("what is the average price of tomato across the world")
+        self.assertEqual(llm.calls, 1, "declining must not run the other modules")
+        self.assertIsNone(result.state.itinerary)
+        self.assertTrue(result.state.out_of_scope)
+
+    def test_the_refusal_is_the_same_words_every_time(self):
+        # Fixed wording: the one reply that should never vary must not be the
+        # one reply nobody has reviewed.
+        tomato = RunState("what is the average price of tomato across the world")
+        tomato.out_of_scope = True
+        code = RunState("write me a python script")
+        code.out_of_scope = True
+        self.assertEqual(render_out_of_scope(tomato), render_out_of_scope(code))
+
+    def test_the_refusal_says_what_the_agent_does_instead(self):
+        state = RunState("what is the average price of tomato across the world")
+        state.out_of_scope = True
+        rendered = render_out_of_scope(state)
+        self.assertIn("not a question about planning an accessible trip", rendered)
+        self.assertIn("ATEX plans accessible trips", rendered)
+        # The off-topic subject is never echoed back.
+        self.assertNotIn("tomato", rendered.lower())
+
+    def test_declining_is_never_corrected_into_planning_work(self):
+        state = RunState("what is the price of tomatoes")
+        allowed, corrected = _legalize(state, "OUT_OF_SCOPE")
+        self.assertEqual(allowed, "OUT_OF_SCOPE")
+        self.assertIsNone(corrected)
 
 
 class TestResponseTidiness(unittest.TestCase):

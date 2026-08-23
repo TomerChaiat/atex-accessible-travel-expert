@@ -24,6 +24,7 @@ from ..state import RunState, normalize_plan_shape
 
 ASK_USER = "ASK_USER"
 FINISH = "FINISH"
+OUT_OF_SCOPE = "OUT_OF_SCOPE"
 
 CHOICES = {
     USER_PROFILE_AGENT,
@@ -32,6 +33,7 @@ CHOICES = {
     SCHEDULE_PLANNER,
     ASK_USER,
     FINISH,
+    OUT_OF_SCOPE,
 }
 
 MAX_FINDER_ROUNDS = 4
@@ -91,6 +93,11 @@ def _legalize(state: RunState, choice: str) -> tuple[str, str | None]:
     Guards invariants the prompt already states, because a prompt is a request
     and this is a guarantee.
     """
+    if choice == OUT_OF_SCOPE:
+        # Declining is always legal. Correcting it into planning work is the
+        # exact failure this decision exists to prevent.
+        return OUT_OF_SCOPE, None
+
     if (
         state.profile is not None
         and not state.candidates

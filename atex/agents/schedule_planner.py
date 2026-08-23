@@ -31,6 +31,10 @@ LEADING_SEPARATOR_PATTERN = re.compile(r"^[\s\W_]+")
 # deserves a reason for. A live city search returns dozens of surplus venues;
 # listing them all buries the handful that matter.
 MAX_NOT_SCHEDULED = 8
+
+# Checking out, crossing a city with luggage, and checking in again. Travel
+# time between the two hotels is added on top of this.
+HOTEL_MOVE_MINUTES = 45
 GENERIC_PLACEHOLDER_NAMES = {
     "break",
     "free time",
@@ -226,9 +230,9 @@ def _align_item_times(items: list[dict[str, Any]], day_start: str | None = None)
         cursor = _parse_time(day_start)
     if cursor is None:
         cursor = 9 * 60
-    for index, item in enumerate(items):
-        if index:
-            cursor += _travel_minutes(item)
+    for item in items:
+        # Index 0 counts as well: its travel is the journey from the hotel.
+        cursor += _travel_minutes(item)
         item["time"] = f"{(cursor // 60) % 24:02d}:{cursor % 60:02d}"
         cursor += _duration(item)
 
@@ -361,6 +365,105 @@ def _drop_unreachable(
 
     items[:] = kept
     return dropped
+
+
+def _hotel_for_day(state: RunState, day_number: int) -> Any:
+    """The candidate the traveller sleeps at on this day, if one was chosen."""
+    for stay in state.selected_hotel_stays:
+        try:
+            start = int(stay.get("start_day") or 1)
+            end = int(stay.get("end_day") or start)
+        except (TypeError, ValueError):
+            continue
+        if start <= day_number <= end:
+            candidate = state.candidates.get(str(stay.get("place_id") or ""))
+            if candidate is not None and candidate.verdict != "flagged":
+                return candidate
+    return None
+
+
+def _ensure_hotel_move(
+    state: RunState, items: list[dict[str, Any]], day_number: int
+) -> None:
+    """Put the change of hotel in the day it happens.
+
+    Moving between hotels costs the traveller real time -- checking out,
+    carrying luggage across a city, checking in -- and a schedule that skips
+    it quietly hands that time to an attraction instead.
+
+    The row is logistics, not a visit, so it carries no accessibility label.
+    The hotel's own verdict belongs in "Where you'll stay", which is where a
+    traveller looks for it.
+    """
+    moving_to = next(
+        (
+            stay
+            for stay in state.selected_hotel_stays
+            if int(stay.get("start_day") or 1) == day_number
+            and int(stay.get("start_day") or 1) > 1
+        ),
+        None,
+    )
+    if moving_to is None:
+        return
+    hotel = state.candidates.get(str(moving_to.get("place_id") or ""))
+    if hotel is None or hotel.verdict == "flagged":
+        return
+    if any(str(item.get("place_id") or "") == hotel.place_id for item in items):
+        return
+
+    items.insert(
+        0,
+        {
+            "time": "",
+            "place_id": hotel.place_id,
+            "name": f"Move to {hotel.name}",
+            "kind": "stay",
+            "duration_min": HOTEL_MOVE_MINUTES,
+            "accessibility": "n/a",
+            "note": "Check out, travel with luggage, and check in.",
+        },
+    )
+    state.log(f"SchedulePlanner: added hotel move to {hotel.name} on day {day_number}")
+
+
+def _attach_hotel_departure(
+    state: RunState,
+    items: list[dict[str, Any]],
+    day_number: int,
+    router: Any,
+    places: dict[str, Any] | None,
+    profile: dict[str, Any] | None,
+) -> None:
+    """Account for getting from the hotel to the day's first stop.
+
+    Days began at `day_start` sharp at the first attraction, as though the
+    traveller woke up inside it. The journey out of the hotel is part of the
+    morning and belongs in the arithmetic.
+    """
+    hotel = _hotel_for_day(state, day_number)
+    if hotel is None or not places:
+        return
+    first = next((item for item in items if _is_real_activity(item, state)), None)
+    if first is None or first.get("travel_from_previous"):
+        return
+
+    origin = places.get(hotel.place_id)
+    destination = places.get(str(first.get("place_id") or ""))
+    if origin is None or destination is None or origin.id == destination.id:
+        return
+
+    options = drop_unreasonable(router.options(origin, destination, profile))
+    chosen = planning_option(options)
+    if chosen is None:
+        return
+    first["travel_from_previous"] = {
+        "from_place_id": hotel.place_id,
+        "from_name": hotel.name,
+        "km": chosen.get("km"),
+        "min": chosen.get("minutes"),
+        "options": options,
+    }
 
 
 def _is_real_activity(item: dict[str, Any], state: RunState) -> bool:
@@ -611,6 +714,16 @@ def _enforce_verdicts(
                 # the planner gives it -- collides with the next item's start.
                 state.log(f"SchedulePlanner: dropped hotel row {candidate.name}")
                 continue
+            elif candidate is not None and _normalise_label(item.get("kind")) == "stay":
+                # Moving hotel is a logistics step, not a visit. Its own
+                # accessibility verdict belongs in "Where you'll stay", which
+                # is where a traveller looks for it; labelling the move as
+                # though it were an attraction only muddies both.
+                if candidate.verdict == "flagged":
+                    continue
+                item["accessibility"] = "n/a"
+                if not str(item.get("name") or "").strip():
+                    item["name"] = f"Move to {candidate.name}"
             elif candidate is not None:
                 verdict = candidate.verdict or "unknown"
                 if verdict == "flagged":
@@ -659,6 +772,10 @@ def _enforce_verdicts(
         if str(item.get("place_id") or "") in state.candidates
     }
     for day in clean_days:
+        day_number = day["day"]
+        # A change of hotel comes first: it happens before the day's sightseeing
+        # and it consumes time that must not be handed to an attraction.
+        _ensure_hotel_move(state, day["items"], day_number)
         scheduled_non_ok.extend(
             _fill_short_day(
                 state,
@@ -673,6 +790,7 @@ def _enforce_verdicts(
         _attach_travel_options(
             state, day["items"], matrix_lookup, router, places, profile
         )
+        _attach_hotel_departure(state, day["items"], day_number, router, places, profile)
         _align_item_times(day["items"], shape.get("day_start"))
         _trim_past_day_end(state, day["items"], shape.get("day_end"))
 

@@ -132,6 +132,30 @@ The `.env.example` file should exist locally for documentation but remain ignore
     rejected hotel stays in `candidates`, which is what stops the next search
     offering it straight back.
 
+29. Location names are matched loosely. "Los Angels" and "Los Angeles" are
+    the same city; treating them as two split a fourteen-day stay into days
+    1-13 and day 14 with a separate hotel for each. Genuinely different
+    cities, including short similar ones, stay separate.
+30. A traveller can change hotel without changing city. The Supervisor may
+    give `plan_shape.hotel_stays` explicitly — "one hotel the first week and
+    a different one the second". A split is used only when it covers every day
+    exactly once, in order, with no gap or overlap; anything malformed falls
+    back to the geographic derivation rather than being patched up.
+31. The change of hotel appears in the day it happens, with time for checking
+    out, travelling with luggage and checking in. That row is logistics, not a
+    visit, so it carries no accessibility label — the hotel's verdict belongs
+    in "Where you'll stay".
+32. Each day allows time to get from the hotel to its first stop. Days used to
+    begin at `day_start` sharp at the first attraction, as though the traveller
+    woke up inside it. Prefer a hotel central to that stay's attractions.
+33. A request that is not about travel is declined by the Supervisor on its
+    first turn, before any other module runs, and the loop stops there —
+    including the forced-finalize path. Declining costs one model call. A
+    vague travel request is not out of scope; that is what ASK_USER is for.
+    - The reply is fixed wording (`OUT_OF_SCOPE_MESSAGE` in `atex/render.py`)
+      and never varies. The off-topic subject is not echoed back, and the
+      model's reason stays in the trace rather than reaching the traveller.
+
 ## Quick examples
 
 - "We are a family of four visiting Amsterdam for three days. Our daughter uses a manual wheelchair. We prefer a relaxed pace, no more than two activities per day. We need a verified accessible hotel."

@@ -159,6 +159,28 @@ def _render_travel(item: dict[str, Any]) -> list[str]:
     return lines
 
 
+OUT_OF_SCOPE_MESSAGE = (
+    "I can't help with that one.\n"
+    "\n"
+    "That is not a question about planning an accessible trip.\n"
+    "\n"
+    "ATEX plans accessible trips. Tell me where you would like to go, for how long, "
+    "and what you need, and I will build a day-by-day itinerary with an explicit "
+    "accessibility verdict for every place in it."
+)
+
+
+def render_out_of_scope(state: RunState) -> str:
+    """The same answer every time a request is not about travel.
+
+    Fixed wording on purpose. Repeating the off-topic question back at the
+    traveller adds nothing they do not already know, and letting the model
+    write the refusal makes the one response that should never vary the one
+    response nobody has reviewed.
+    """
+    return OUT_OF_SCOPE_MESSAGE
+
+
 def render_clarification(state: RunState) -> str:
     question = state.clarification_question or "Could you tell me a little more about your trip?"
     lines = ["I need one more detail before I can plan this trip.", "", f"**{question}**"]
@@ -298,6 +320,8 @@ def render_itinerary(state: RunState, trace: RunTrace, settings: Settings) -> st
 
 
 def render_response(state: RunState, trace: RunTrace, settings: Settings) -> str:
+    if state.out_of_scope:
+        return render_out_of_scope(state)
     if state.clarification_question and state.itinerary is None:
         return render_clarification(state)
     if state.itinerary is None:
