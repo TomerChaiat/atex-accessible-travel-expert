@@ -74,6 +74,14 @@ SELF_POWERED_LIMIT_KM = {
 # Below this, a tram or a taxi is theatre; walking is the honest answer.
 TRANSIT_MIN_KM = 0.4
 
+# Above this, public transport stops being a way to spend a morning and starts
+# being the morning. A Los Angeles run offered a 145-minute bus ride between
+# two attractions on the same day, and because the schedule is laid out on the
+# slowest option, that single hop swallowed two and a half hours of it.
+# Distance already gates walking; time is the right gate for transit, since a
+# short hop with three changes is as bad as a long one.
+TRANSIT_MAX_MINUTES = 40
+
 # Ceiling on live routing per run, so a long trip cannot turn into a surprise
 # Google bill or blow the wall-clock budget.
 MAX_GOOGLE_ELEMENTS = 40
@@ -128,6 +136,30 @@ def offered_modes(profile: dict[str, Any] | None, km: float) -> list[str]:
         modes.append("accessible_transit")
     modes.append("accessible_taxi")
     return modes
+
+
+def drop_unreasonable(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove travel options no traveller would actually choose.
+
+    Only applied once durations are known, because a mode's cost in time is
+    not a function of distance alone -- a short hop with three changes can be
+    worse than a long direct one.
+
+    Never empties the list: if every option is unreasonable the least bad one
+    survives, because "you cannot get there" is not an answer when the
+    itinerary has already put the venue in the day.
+    """
+    keep = [
+        option
+        for option in options
+        if not (
+            option.get("mode") == "accessible_transit"
+            and (option.get("minutes") or 0) > TRANSIT_MAX_MINUTES
+        )
+    ]
+    if keep:
+        return keep
+    return [min(options, key=lambda option: option.get("minutes") or 0)] if options else []
 
 
 def planning_option(options: list[dict[str, Any]]) -> dict[str, Any] | None:

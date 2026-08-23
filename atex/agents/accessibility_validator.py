@@ -161,6 +161,11 @@ def retrieve_evidence(
     return specific, general[:2]
 
 
+# Marks the candidates that never reached the model because retrieval was
+# empty, which is what separates a coverage gap from a judgement.
+NO_EVIDENCE_SUMMARY = "No accessibility information for this place in the knowledge base."
+
+
 def _unknown(reason: str) -> dict[str, Any]:
     return {
         "verdict": "unknown",
@@ -319,7 +324,7 @@ def validate_batch(
             )
             _assign(
                 candidate,
-                _unknown("No accessibility information for this place in the knowledge base."),
+                _unknown(NO_EVIDENCE_SUMMARY),
             )
             continue
 
@@ -404,3 +409,28 @@ def run(ctx: AgentContext, state: RunState, instruction: str = "") -> None:
 
     counts = {v: len(state.by_verdict(v)) for v in ("supported", "flagged", "unknown")}
     state.log(f"AccessibilityValidator: checked {checked}; totals {counts}")
+
+    # Most "unverified" results are a knowledge-base coverage gap, not a
+    # judgement the model made -- across observed runs, 71-83% of candidates
+    # had no retrievable passage at all. Reporting the split makes the
+    # difference visible instead of leaving it to be inferred from the notes.
+    reached_model = sum(
+        1
+        for candidate in state.candidates.values()
+        if candidate.verdict is not None
+        and candidate.verdict_detail.get("summary") != NO_EVIDENCE_SUMMARY
+    )
+    without_evidence = sum(
+        1
+        for candidate in state.candidates.values()
+        if candidate.verdict_detail.get("summary") == NO_EVIDENCE_SUMMARY
+    )
+    total = reached_model + without_evidence
+    # Once only, when nothing is left to check, so the figure is the run's
+    # final split rather than a running total repeated per batch.
+    if total and not state.unvalidated():
+        ctx.trace.note(
+            f"Evidence coverage: {without_evidence}/{total} candidate(s) had no "
+            f"retrievable passage and were returned unverified without a model "
+            f"call; {reached_model} were judged from cited evidence."
+        )

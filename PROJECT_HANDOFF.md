@@ -107,6 +107,18 @@ The `.env.example` file should exist locally for documentation but remain ignore
     `requested_locations_only` is a hard boundary. Discovery is capped at four
     Finder rounds and is repeated while a planned location lacks attractions
     or hotel coverage.
+25. A day's attraction target is enforced in code, not left to the planner.
+    After the itinerary comes back, any day short of its target is topped up
+    from checked candidates nobody scheduled — verified first, then
+    unverified — matching that day's location, and stopping at `day_end`. A
+    Los Angeles run asked for three a day and returned two while 48 checked
+    candidates sat unused.
+26. Public transport is not offered for a hop over 40 minutes. Distance gates
+    walking; time gates transit, because a short hop with three changes costs
+    as much as a long one. The same Los Angeles run offered a 145-minute bus
+    ride, and since the schedule is laid out on the slowest option that hop
+    swallowed two and a half hours of the day. At least one option always
+    survives — the traveller is never told there is no way to get there.
 
 ## Quick examples
 

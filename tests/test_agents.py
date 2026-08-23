@@ -44,6 +44,7 @@ from atex.agents.schedule_planner import (  # noqa: E402
     MAX_NOT_SCHEDULED,
     _enforce_verdicts,
     _flagged_reason,
+    _is_real_activity,
     _parse_time,
 )
 from atex.agents.user_profile import (  # noqa: E402
@@ -67,6 +68,7 @@ from atex.routing import (  # noqa: E402
     LocalRouter,
     build_router,
     describe_options,
+    drop_unreasonable,
     planning_option,
     self_powered_limit_km,
 )
@@ -523,6 +525,9 @@ class TestGooglePlacesRepository(unittest.TestCase):
 class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
     def _state(self):
         state = RunState(request="x")
+        # One stop a day, so the day-filling top-up stays out of tests that are
+        # about verdict enforcement rather than how full a day is.
+        state.plan_shape = normalize_plan_shape({"activities_per_day": 1}, None)
         state.candidates["p1"] = Candidate(
             place_id="p1", name="Unknown Place", kind="activity", brief={},
             verdict="unknown", verdict_detail={"summary": "No evidence."},
@@ -891,10 +896,11 @@ class TestPlannerCannotUpgradeVerdicts(unittest.TestCase):
             ],
         })
         items = itinerary["days"][0]["items"]
-        self.assertEqual(
-            [item["accessibility"] for item in items],
-            ["n/a"],
-        )
+        # Every generic row is stripped of the verdict it borrowed. A real
+        # activity may follow it, because a day with no attractions at all
+        # gets topped up; that is a different promise, tested separately.
+        generic = [item for item in items if not _is_real_activity(item, state)]
+        self.assertEqual([item["accessibility"] for item in generic], ["n/a"])
         self.assertEqual(items[0]["place_id"], "meal-break")
         self.assertNotIn("Lunch break", " ".join(itinerary["things_to_confirm"]))
         self.assertNotIn("Hotel rest", " ".join(itinerary["things_to_confirm"]))
@@ -1209,6 +1215,38 @@ class TestGoogleRoutesRouter(unittest.TestCase):
             by_mode["accessible_taxi"]["minutes"],
         )
 
+    def test_a_two_hour_bus_ride_is_not_offered_as_an_option(self):
+        # Los Angeles offered a 145-minute transit hop between two attractions
+        # on the same day. Because the schedule is laid out on the slowest
+        # option, that one hop swallowed two and a half hours of the day.
+        options = drop_unreasonable([
+            {"mode": "accessible_transit", "minutes": 145, "km": 30},
+            {"mode": "accessible_taxi", "minutes": 20, "km": 30},
+        ])
+        self.assertEqual([o["mode"] for o in options], ["accessible_taxi"])
+
+    def test_a_reasonable_bus_ride_is_kept(self):
+        options = drop_unreasonable([
+            {"mode": "accessible_transit", "minutes": 35, "km": 6},
+            {"mode": "accessible_taxi", "minutes": 20, "km": 6},
+        ])
+        self.assertEqual(len(options), 2)
+
+    def test_the_traveller_is_never_left_with_no_way_to_get_there(self):
+        # If every option is unreasonable the least bad one still stands: the
+        # venue is already in the day, so silence is not an answer.
+        options = drop_unreasonable([
+            {"mode": "accessible_transit", "minutes": 200, "km": 60},
+        ])
+        self.assertEqual(len(options), 1)
+
+    def test_capping_transit_shortens_what_the_schedule_allows(self):
+        kept = drop_unreasonable([
+            {"mode": "accessible_transit", "minutes": 145, "km": 30},
+            {"mode": "accessible_taxi", "minutes": 20, "km": 30},
+        ])
+        self.assertEqual(planning_option(kept)["minutes"], 20)
+
     def test_no_maps_key_selects_the_local_router(self):
         self.assertIsInstance(build_router(SimpleNamespace(google_maps_api_key="")), LocalRouter)
         self.assertIsInstance(
@@ -1494,6 +1532,101 @@ class TestPlanShape(unittest.TestCase):
             },
         )
         self.assertEqual(itinerary["days"][0]["items"], [])
+
+
+class TestDaysAreActuallyFilled(unittest.TestCase):
+    """A stated target is a promise, so code keeps it rather than the prompt.
+
+    A fourteen-day Los Angeles request asked for three attractions a day. The
+    Supervisor set that shape and the planner was told it, but it returned two
+    a day while forty-eight checked candidates went unused.
+    """
+
+    def _state(self, spare=6, per_day=3):
+        state = RunState("x")
+        state.profile = {"trip_days": 1, "destination": "Los Angeles"}
+        state.plan_shape = normalize_plan_shape(
+            {"activities_per_day": per_day, "day_start": "09:00", "day_end": "20:00"},
+            state.profile,
+        )
+        for i in range(spare):
+            state.candidates[f"a{i}"] = Candidate(
+                f"a{i}", f"Attraction {i}", "activity", {"duration_min": 90},
+                verdict="supported" if i % 2 else "unknown",
+            )
+        return state
+
+    def test_a_short_day_is_topped_up_to_its_target(self):
+        state = self._state()
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": [
+                {"place_id": "a0", "name": "Attraction 0", "kind": "activity"},
+            ]}],
+        })
+        items = itinerary["days"][0]["items"]
+        activities = [i for i in items if _is_real_activity(i, state)]
+        self.assertEqual(len(activities), 3)
+
+    def test_verified_places_are_used_before_unverified_ones(self):
+        state = self._state()
+        itinerary = _enforce_verdicts(state, {"days": [{"day": 1, "items": []}]})
+        activities = [
+            i for i in itinerary["days"][0]["items"] if _is_real_activity(i, state)
+        ]
+        self.assertEqual(activities[0]["accessibility"], "supported")
+
+    def test_a_day_is_never_padded_with_the_same_place_twice(self):
+        state = self._state()
+        itinerary = _enforce_verdicts(state, {"days": [{"day": 1, "items": []}]})
+        ids = [i["place_id"] for i in itinerary["days"][0]["items"]]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_filling_never_reuses_a_place_from_another_day(self):
+        state = self._state(spare=4)
+        state.profile["trip_days"] = 2
+        state.plan_shape = normalize_plan_shape(
+            {"activities_per_day": 2, "day_start": "09:00", "day_end": "20:00"},
+            state.profile,
+        )
+        itinerary = _enforce_verdicts(state, {
+            "days": [{"day": 1, "items": []}, {"day": 2, "items": []}],
+        })
+        seen = [
+            item["place_id"]
+            for day in itinerary["days"]
+            for item in day["items"]
+        ]
+        self.assertEqual(len(seen), len(set(seen)))
+
+    def test_a_flagged_place_is_never_used_to_fill_a_day(self):
+        state = self._state(spare=1)
+        state.candidates["bad"] = Candidate(
+            "bad", "Steps Museum", "activity", {}, verdict="flagged"
+        )
+        itinerary = _enforce_verdicts(state, {"days": [{"day": 1, "items": []}]})
+        ids = {i["place_id"] for i in itinerary["days"][0]["items"]}
+        self.assertNotIn("bad", ids)
+
+    def test_filling_stops_at_the_end_of_the_day(self):
+        # Twelve 90-minute stops cannot fit between 09:00 and 20:00.
+        state = self._state(spare=12, per_day=12)
+        itinerary = _enforce_verdicts(state, {"days": [{"day": 1, "items": []}]})
+        items = itinerary["days"][0]["items"]
+        self.assertTrue(items)
+        for item in items:
+            self.assertLess(_parse_time(item["time"]), 20 * 60)
+
+    def test_a_filled_unverified_place_still_needs_confirming(self):
+        state = self._state(spare=2, per_day=2)
+        itinerary = _enforce_verdicts(state, {"days": [{"day": 1, "items": []}]})
+        unknown = [
+            i for i in itinerary["days"][0]["items"]
+            if i.get("accessibility") == "unknown"
+        ]
+        self.assertTrue(unknown)
+        confirm = " ".join(itinerary["things_to_confirm"])
+        for item in unknown:
+            self.assertIn(item["name"], confirm)
 
 
 class TestResponseTidiness(unittest.TestCase):

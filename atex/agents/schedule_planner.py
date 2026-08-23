@@ -15,7 +15,7 @@ from .. import SCHEDULE_PLANNER
 from ..context import AgentContext
 from ..prompts import PLANNER_SYSTEM, planner_user_prompt
 from ..repository import RepositoryError
-from ..routing import MODE_LABELS, build_router, planning_option
+from ..routing import MODE_LABELS, build_router, drop_unreasonable, planning_option
 from ..state import RunState
 from ..tools import travel_matrix
 from ..util import truncate
@@ -298,7 +298,9 @@ def _attach_travel_options(
             options: list[dict[str, Any]] = []
             origin, destination = places.get(previous_place_id), places.get(place_id)
             if router is not None and origin is not None and destination is not None:
-                options = router.options(origin, destination, profile)
+                options = drop_unreasonable(
+                    router.options(origin, destination, profile)
+                )
             if not options:
                 estimate = lookup.get(tuple(sorted((previous_place_id, place_id))))
                 if estimate is not None:
@@ -359,6 +361,97 @@ def _drop_unreachable(
 
     items[:] = kept
     return dropped
+
+
+def _is_real_activity(item: dict[str, Any], state: RunState) -> bool:
+    candidate = state.candidates.get(str(item.get("place_id") or ""))
+    return candidate is not None and candidate.kind == "activity"
+
+
+def _fill_short_day(
+    state: RunState,
+    items: list[dict[str, Any]],
+    target: int,
+    planned_location: str,
+    used_ids: set[str],
+    places: dict[str, Any] | None,
+) -> list[tuple[str, str, str]]:
+    """Top a day up to its target using candidates nobody scheduled.
+
+    The Supervisor decides how full a day should be and the prompt states the
+    number, but the planner still returned two stops a day for a fourteen-day
+    Los Angeles trip while forty-eight checked candidates sat unused. Asking
+    the model again is not a guarantee; adding the places here is.
+
+    Verified venues go in first, then unverified ones -- unverified is a real
+    answer, not a reason to leave the day half empty. Returns the newly added
+    unknown venues so they still reach "Confirm before you travel".
+    """
+    added_unknown: list[tuple[str, str, str]] = []
+    scheduled = sum(1 for item in items if _is_real_activity(item, state))
+    if scheduled >= target:
+        return added_unknown
+
+    def usable(candidate: Any) -> bool:
+        if candidate.kind != "activity" or candidate.place_id in used_ids:
+            return False
+        if candidate.verdict == "flagged":
+            return False
+        if places and not _has_location(places.get(candidate.place_id)):
+            # No coordinates means no way to say how the traveller gets there.
+            return False
+        city = str(candidate.brief.get("city") or "")
+        if city and planned_location and city.casefold() != planned_location.casefold():
+            return False
+        return True
+
+    spare = sorted(
+        (c for c in state.candidates.values() if usable(c)),
+        key=lambda c: (RANK.get(c.verdict, 3), c.name),
+    )
+
+    for candidate in spare:
+        if scheduled >= target:
+            break
+        verdict = candidate.verdict or "unknown"
+        items.append(
+            {
+                "time": "",
+                "place_id": candidate.place_id,
+                "name": candidate.name,
+                "kind": "activity",
+                "duration_min": int(candidate.brief.get("duration_min") or 90),
+                "accessibility": verdict,
+                "note": "Added to fill out the day; confirm details before you go."
+                if verdict == "unknown"
+                else "",
+            }
+        )
+        used_ids.add(candidate.place_id)
+        scheduled += 1
+        if verdict == "unknown":
+            added_unknown.append((candidate.place_id, candidate.name, verdict))
+        state.log(f"SchedulePlanner: filled day with {candidate.name}")
+    return added_unknown
+
+
+def _trim_past_day_end(
+    state: RunState, items: list[dict[str, Any]], day_end: str | None
+) -> None:
+    """Drop trailing venues that would start after the day is meant to finish.
+
+    Topping a day up can overshoot once travel time is added. A stop beginning
+    after the traveller's day has ended is worse than a shorter day.
+    """
+    end = _parse_time(day_end)
+    if end is None:
+        return
+    while items:
+        start = _parse_time(items[-1].get("time"))
+        if start is None or start < end or not _is_real_activity(items[-1], state):
+            break
+        state.log(f"SchedulePlanner: dropped {items[-1].get('name')} past day end")
+        items.pop()
 
 
 def _prune_not_scheduled(
@@ -551,14 +644,37 @@ def _enforce_verdicts(
         # become the origin of the next hop's distance.
         unreachable.extend(_drop_unreachable(state, clean_items, places))
         clean_items = _compact_breaks(clean_items)
-        # Travel next: the times below are laid out around it.
-        _attach_travel_options(
-            state, clean_items, matrix_lookup, router, places, profile
-        )
-        _align_item_times(clean_items, shape.get("day_start"))
         day["items"] = clean_items
         day["day"] = day_number
+        day["_target"] = max(1, int(day_shape.get("activities") or 1))
+        day["_location"] = planned_location
         clean_days.append(day)
+
+    # Every day is now clean, so we know which candidates the plan actually
+    # used and can hand the leftovers to whichever days came up short.
+    used_ids = {
+        str(item.get("place_id") or "")
+        for day in clean_days
+        for item in day["items"]
+        if str(item.get("place_id") or "") in state.candidates
+    }
+    for day in clean_days:
+        scheduled_non_ok.extend(
+            _fill_short_day(
+                state,
+                day["items"],
+                day.pop("_target"),
+                day.pop("_location"),
+                used_ids,
+                places,
+            )
+        )
+        # Travel next: the times below are laid out around it.
+        _attach_travel_options(
+            state, day["items"], matrix_lookup, router, places, profile
+        )
+        _align_item_times(day["items"], shape.get("day_start"))
+        _trim_past_day_end(state, day["items"], shape.get("day_end"))
 
     itinerary["days"] = clean_days
 
