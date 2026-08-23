@@ -462,7 +462,7 @@ class FakeLLMBackend:
                 ),
                 {},
             )
-            per_day = max(1, int(day_shape.get("activities") or 2))
+            per_day = max(1, int(day_shape.get("activities") or 3))
             day_location = str(day_shape.get("location") or "").casefold()
             items, minutes = [], 9 * 60 + 30
             placed = 0
@@ -584,7 +584,7 @@ def _decision(
 
 def _fake_plan_shape(profile: dict[str, Any]) -> dict[str, Any]:
     trip_days = max(1, int(profile.get("trip_days") or 3))
-    base = int(profile.get("max_activities_per_day") or 2)
+    base = int(profile.get("max_activities_per_day") or 3)
     locations = profile.get("destinations") or [profile.get("destination") or ""]
     days = []
     for index in range(trip_days):
